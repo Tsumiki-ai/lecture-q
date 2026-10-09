@@ -42,7 +42,10 @@ main{flex:1;display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,2fr);g
 .pane h2{font-size:12px;color:var(--muted);margin:0;padding:8px 12px;border-bottom:1px solid var(--line);letter-spacing:.06em;text-transform:uppercase}
 .scroll{flex:1;overflow-y:auto;padding:10px 12px;min-height:0;-webkit-overflow-scrolling:touch}
 #side{display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1.4fr);gap:10px;min-height:0}
-.line{margin:0 0 8px;font-size:17px}
+.line{margin:0 0 8px;font-size:17px;cursor:pointer;border-left:3px solid transparent;padding-left:6px;-webkit-tap-highlight-color:transparent}
+.line:active{opacity:.6}
+.line.manual{border-left-color:var(--accent)}
+.line.manual .tx::after{content:" 👆";font-size:12px}
 .line .ts{color:var(--muted);font-size:11px;margin-right:6px;font-variant-numeric:tabular-nums}
 .line.q2 .tx{background:var(--q);color:var(--q-fg);font-weight:700;padding:2px 6px;border-radius:4px}
 .line.q1 .tx{background:var(--q-weak);color:var(--q-weak-fg);font-weight:600;padding:2px 6px;border-radius:4px}
@@ -84,7 +87,7 @@ textarea{min-height:90px;resize:vertical}
 <main>
   <section class="pane" aria-label="文字起こし">
     <h2>文字起こし</h2>
-    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。</p></div>
+    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば質問として回答候補を出せる。</p></div>
   </section>
   <section id="side">
     <div class="pane" aria-label="検知した質問">
@@ -356,6 +359,7 @@ function handleSegment(tx, lat, proc, sec){
   A.lines.push({ kind:'seg', t: now, text: tx, level: lv });
   const tr = $('transcript'); const notice = tr.querySelector('.notice'); if (notice) notice.remove();
   const p = document.createElement('p'); p.className = 'line' + (lv === 2 ? ' q2' : lv === 1 ? ' q1' : '');
+  p.dataset.text = tx; p.dataset.ts = ts;
   p.innerHTML = '<span class="ts">' + ts + '</span><span class="tx"></span>' + (lv ? '<span class="why"></span>' : '');
   p.querySelector('.tx').textContent = (lv === 2 ? '❓ ' : lv === 1 ? '? ' : '') + tx;
   if (lv) p.querySelector('.why').textContent = '← ' + (lv === 2 ? '質問' : '質問？') + '（' + why + '）';
@@ -369,6 +373,23 @@ function handleSegment(tx, lat, proc, sec){
   A.lastSeg = tx; A.lastSegAt = Date.now();
   setStatus('遅れ ' + lat.toFixed(1) + '秒（処理 ' + proc.toFixed(1) + '秒／音声 ' + sec.toFixed(1) + '秒）  待ち ' + A.chunkQ.length);
 }
+
+/* ---------------- 手動で質問として送る（文をタップ） ---------------- */
+function manualAsk(p){
+  const tx = p.dataset.text; if (!tx) return;
+  if (cfg.llm === 'off') { setStatus('回答候補がオフ。設定で提供元を選ぶ'); return; }
+  const qid = ++A.qid; const ts = p.dataset.ts || hhmmss(new Date());
+  p.classList.add('manual');
+  // 文脈はその文より前の直近10文
+  const idx = A.recent.findIndex(r => r.endsWith(' ' + tx)); const before = idx >= 0 ? A.recent.slice(0, idx) : A.recent.slice(0, -1);
+  const ctx = before.slice(-10).join('\n');
+  const q = document.createElement('p'); q.className = 'qitem'; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
+  A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
+  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
+  A.lines.push({ kind:'manual', t:new Date(), text: tx });
+  askAnswer(qid, tx, ctx);
+}
+$('transcript').addEventListener('click', (e) => { const p = e.target.closest('.line'); if (p) manualAsk(p); });
 
 /* ---------------- 回答候補 ---------------- */
 const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n全体で6行以内・150字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
@@ -403,7 +424,7 @@ async function askAnswer(qid, q, ctx){
 
 /* ---------------- ログ ---------------- */
 function hhmmss(d){ return d.toTimeString().slice(0, 8); }
-function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
+function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : l.kind === 'manual' ? ('    [手動で質問] ' + l.text) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
 $('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_log_' + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
 $('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
 $('btnClear').addEventListener('click', () => { $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; A.lines = []; A.nq = 0; $('count').textContent = '質問 0 件'; });
