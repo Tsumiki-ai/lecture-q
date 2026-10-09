@@ -197,7 +197,8 @@ function detectQuestion(text){
 
 /* ---------------- 音声 ---------------- */
 const A = { running:false, ctx:null, stream:null, proc:null, src:null, gain:null, resample:null, pending:new Float32Array(0), wake:null,
-  noise:0.004, buf:[], preroll:[], speechBlocks:0, trailing:0, collecting:false, chunkQ:[], busy:false, recent:[], qid:0, lastSent:['',0], nq:0, lines:[], vocab:'' };
+  noise:0.004, buf:[], preroll:[], speechBlocks:0, trailing:0, collecting:false, chunkQ:[], busy:false, recent:[], qid:0, lastSent:['',0], nq:0, lines:[], vocab:'',
+  cbCount:0, rawPeak:0, loud:0.002, agc:1, diagTimer:null, lastSeg:'' };
 function makeResampler(inRate, outRate){
   const ratio = inRate / outRate; const win = Math.max(1, Math.round(ratio)); let carry = new Float32Array(0); let pos = 0;
   return (input) => {
@@ -207,7 +208,9 @@ function makeResampler(inRate, outRate){
     const keep = Math.floor(pos); carry = x.slice(keep); pos -= keep; return Float32Array.from(out);
   };
 }
-function setMeter(rms, thr, sp){ $('meterBar').style.width = Math.min(120, rms * 1200) + 'px'; $('meterBar').style.background = sp ? 'var(--ok)' : '#2e7d32'; $('meterThr').style.left = Math.min(118, thr * 1200) + 'px'; }
+// dB目盛（-60dB〜0dB を 0〜120px）。小さい音でも動きが見えるように対数にする
+function px(v){ const db = 20 * Math.log10(Math.max(v, 1e-6)); return Math.max(0, Math.min(120, (db + 60) / 60 * 120)); }
+function setMeter(rms, thr, sp){ $('meterBar').style.width = px(rms) + 'px'; $('meterBar').style.background = sp ? 'var(--ok)' : '#2e7d32'; $('meterThr').style.left = Math.min(118, px(thr)) + 'px'; }
 function onBlock(blk){
   let s = 0; for (let i = 0; i < blk.length; i++) s += blk[i] * blk[i]; const rms = Math.sqrt(s / blk.length) + 1e-9;
   if (rms < A.noise * 1.5) A.noise = 0.95 * A.noise + 0.05 * rms;
@@ -221,22 +224,35 @@ function onBlock(blk){
   }
 }
 function onAudio(input){
+  A.cbCount++;
   const y = A.resample(input);
+  // 自動ゲイン: 処理オフのマイクは音が小さいので、声の大きさを推定して 0.06 付近に正規化（1〜60倍）
+  let s = 0; for (let i = 0; i < y.length; i++) s += y[i] * y[i]; const rms = Math.sqrt(s / Math.max(1, y.length)) + 1e-9;
+  if (rms > A.rawPeak) A.rawPeak = rms;
+  if (rms > A.loud) A.loud = 0.7 * A.loud + 0.3 * rms; else A.loud = 0.999 * A.loud + 0.001 * rms;
+  A.agc = Math.max(1, Math.min(60, 0.06 / Math.max(A.loud, 1e-5)));
+  for (let i = 0; i < y.length; i++) { const v = y[i] * A.agc; y[i] = v > 1 ? 1 : v < -1 ? -1 : v; }
   const merged = new Float32Array(A.pending.length + y.length); merged.set(A.pending); merged.set(y, A.pending.length);
   let i = 0; while (i + BLOCK <= merged.length) { onBlock(merged.slice(i, i + BLOCK)); i += BLOCK; }
   A.pending = merged.slice(i);
 }
+function startClick(){
+  if (A.running) { stop(); return; }
+  // iOS Safari は AudioContext をユーザー操作の中でしか起動しない。await より前に同期的に作って resume する
+  try { A.ctx = new (window.AudioContext || window.webkitAudioContext)(); A.ctx.resume(); } catch (e) { setStatus('AudioContext を作れない: ' + e.message); return; }
+  start();
+}
 async function start(){
   formToCfg(); saveCfg();
-  if (!cfg.gkey) { setStatus('Geminiのキーが無い。設定に入れてから開始。'); openSettings(); return; }
+  if (!cfg.gkey) { setStatus('Geminiのキーが無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
   try {
     const raw = cfg.rawMic !== 'auto';
     const constraints = { audio: raw ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false } : true };
     A.stream = await navigator.mediaDevices.getUserMedia(constraints);
-  } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); return; }
-  A.ctx = new (window.AudioContext || window.webkitAudioContext)();
-  await A.ctx.resume();
+  } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
+  if (A.ctx.state !== 'running') { try { await A.ctx.resume(); } catch (e) {} }
   A.resample = makeResampler(A.ctx.sampleRate, SR);
+  A.cbCount = 0; A.rawPeak = 0; A.loud = 0.002; A.agc = 1;
   A.src = A.ctx.createMediaStreamSource(A.stream);
   A.proc = A.ctx.createScriptProcessor(4096, 1, 1);
   A.gain = A.ctx.createGain(); A.gain.gain.value = 0;    // 音は鳴らさない（Safariは出力に繋がないと処理が走らない）
@@ -248,9 +264,27 @@ async function start(){
   $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? cfg.asrModel : 'claude-haiku-5-5') + (cfg.notes ? '・レジュメ有' : '') + '）');
   setStatus('聞き取り中（' + cfg.asrModel + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
   try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+  // 3秒ごとに入力の生存確認。コールバックが来ていなければ原因を状態欄に出す
+  clearInterval(A.diagTimer); let lastCount = 0;
+  A.diagTimer = setInterval(() => {
+    if (!A.running) return;
+    const got = A.cbCount - lastCount; lastCount = A.cbCount;
+    const tr = A.stream && A.stream.getAudioTracks()[0];
+    if (got === 0) {
+      const st = A.ctx ? A.ctx.state : 'none';
+      setStatus(st !== 'running' ? '音声が止まっている（AudioContext: ' + st + '）。画面を一度タップ' : (tr && tr.muted) ? 'マイクが無音（別アプリが使用中か、消音）' : 'マイクから音が来ていない（Safariの設定でマイクを確認）');
+      if (A.ctx && A.ctx.state !== 'running') { try { A.ctx.resume(); } catch (e) {} }
+    } else if (!A.lastSeg || Date.now() - A.lastSegAt > 8000) {
+      setStatus('聞き取り中 ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz・入力レベル ' + (20 * Math.log10(Math.max(A.rawPeak, 1e-6))).toFixed(0) + 'dB・自動ゲイン x' + A.agc.toFixed(0) + (tr && tr.getSettings ? '・' + JSON.stringify({ns: tr.getSettings().noiseSuppression, agc: tr.getSettings().autoGainControl}) : ''));
+      A.rawPeak = 0;
+    }
+  }, 3000);
 }
+// 画面のどこかをタップしたら AudioContext を起こす（iOSの保険）
+document.addEventListener('touchend', () => { if (A.running && A.ctx && A.ctx.state !== 'running') { try { A.ctx.resume(); } catch (e) {} } }, { passive: true });
+document.addEventListener('click', () => { if (A.running && A.ctx && A.ctx.state !== 'running') { try { A.ctx.resume(); } catch (e) {} } });
 function stop(){
-  A.running = false;
+  A.running = false; clearInterval(A.diagTimer);
   try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
   try { A.stream && A.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { A.ctx && A.ctx.close(); } catch (e) {}
@@ -332,6 +366,7 @@ function handleSegment(tx, lat, proc, sec){
     if (lv === 2) { document.body.classList.remove('flash'); void document.body.offsetWidth; document.body.classList.add('flash'); }
     if (qid) { const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight; }
   }
+  A.lastSeg = tx; A.lastSegAt = Date.now();
   setStatus('遅れ ' + lat.toFixed(1) + '秒（処理 ' + proc.toFixed(1) + '秒／音声 ' + sec.toFixed(1) + '秒）  待ち ' + A.chunkQ.length);
 }
 
@@ -395,7 +430,7 @@ $('notesFile').addEventListener('change', async (e) => {
     $('notes').value = text; cfg.notesName = f.name; updateNotesInfo(); setStatus('レジュメを読み込んだ（' + text.length.toLocaleString() + ' 文字）。保存を押す');
   } catch (err) { setStatus('レジュメを読めなかった: ' + err.message + '。本文を貼り付けで入れる'); }
 });
-$('btnStart').addEventListener('click', () => { if (A.running) stop(); else start(); });
+$('btnStart').addEventListener('click', startClick);
 document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && A.running && !A.wake) { try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {} } });
 
 loadCfg(); cfgToForm();
