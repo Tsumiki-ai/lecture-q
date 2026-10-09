@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>講義アシスト</title>
+<style>
+/* 教室で開きっぱなしにする道具。暗い画面を既定にし、黄色は「質問」だけに使う。 */
+:root{
+  --bg:#0f1317; --panel:#161c22; --panel2:#111a1a; --fg:#e6edf3; --muted:#8b96a3; --line:#2a333d;
+  --q:#ffd54f; --q-fg:#1a1200; --q-weak:#7a4a00; --q-weak-fg:#ffe082; --ans:#80cbc4; --accent:#4fc3f7; --danger:#ef9a9a; --ok:#66bb6a;
+  --font:"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic UI","Noto Sans JP",system-ui,sans-serif;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --bg:#f6f7f8; --panel:#ffffff; --panel2:#eef5f4; --fg:#161b22; --muted:#5b6673; --line:#d6dce3;
+  --q:#ffd54f; --q-fg:#1a1200; --q-weak:#ffe8a3; --q-weak-fg:#5a3b00; --ans:#00796b; --accent:#0277bd; --danger:#c62828; --ok:#2e7d32;
+  color-scheme:light; } }
+:root[data-theme="light"]{
+  --bg:#f6f7f8; --panel:#ffffff; --panel2:#eef5f4; --fg:#161b22; --muted:#5b6673; --line:#d6dce3;
+  --q:#ffd54f; --q-fg:#1a1200; --q-weak:#ffe8a3; --q-weak-fg:#5a3b00; --ans:#00796b; --accent:#0277bd; --danger:#c62828; --ok:#2e7d32;
+  color-scheme:light; }
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:var(--font);font-size:16px;line-height:1.5;display:flex;flex-direction:column;overflow:hidden;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+header{display:flex;align-items:center;gap:10px;padding:8px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.02em}
+#status{flex:1 1 200px;min-width:0;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#meter{width:120px;height:12px;background:var(--panel);border:1px solid var(--line);border-radius:2px;position:relative;overflow:hidden}
+#meterBar{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--ok)}
+#meterThr{position:absolute;top:0;bottom:0;width:2px;background:#ff9800}
+button{font:inherit;font-size:14px;padding:8px 14px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);cursor:pointer}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:var(--accent);color:#00131c;border-color:transparent;font-weight:600}
+button.stop{background:#c62828;color:#fff;border-color:transparent;font-weight:600}
+main{flex:1;display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,2fr);gap:10px;padding:10px 16px;min-height:0}
+@media (max-width:760px){ main{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1.2fr) minmax(0,1fr)} }
+.pane{background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;min-height:0;min-width:0}
+.pane h2{font-size:12px;color:var(--muted);margin:0;padding:8px 12px;border-bottom:1px solid var(--line);letter-spacing:.06em;text-transform:uppercase}
+.scroll{flex:1;overflow-y:auto;padding:10px 12px;min-height:0;-webkit-overflow-scrolling:touch}
+#side{display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1.4fr);gap:10px;min-height:0}
+.line{margin:0 0 8px;font-size:17px}
+.line .ts{color:var(--muted);font-size:11px;margin-right:6px;font-variant-numeric:tabular-nums}
+.line.q2 .tx{background:var(--q);color:var(--q-fg);font-weight:700;padding:2px 6px;border-radius:4px}
+.line.q1 .tx{background:var(--q-weak);color:var(--q-weak-fg);font-weight:600;padding:2px 6px;border-radius:4px}
+.line .why{color:var(--muted);font-size:11px;margin-left:6px}
+.qitem{margin:0 0 8px;font-size:15px;color:var(--q)}
+.qitem.weak{color:var(--q-weak-fg)}
+.qitem .ts{color:var(--muted);font-size:11px;margin-right:6px}
+.ans{margin:0 0 14px;padding:10px 12px;background:var(--panel2);border-radius:8px;border-left:3px solid var(--ans)}
+.ans .q{font-size:12px;color:var(--q);margin:0 0 4px}
+.ans .judge{font-size:12px;color:var(--ans);margin:0 0 4px}
+.ans .a{font-size:19px;font-weight:700;margin:0 0 6px}
+.ans p{margin:0 0 4px;font-size:15px}
+.ans .err{color:var(--danger);font-size:13px}
+.ans .thinking{color:var(--muted);font-size:14px}
+footer{display:flex;gap:8px;padding:8px 16px;border-top:1px solid var(--line);align-items:center;flex-wrap:wrap}
+footer .spacer{flex:1}
+#count{font-size:12px;color:var(--muted)}
+dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:0;width:min(640px,94vw);max-height:90vh}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+dialog form{display:flex;flex-direction:column;gap:12px;padding:16px;max-height:90vh;overflow-y:auto}
+dialog h3{margin:0;font-size:16px}
+label{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+input[type=text],input[type=password],select,textarea{font:inherit;font-size:15px;padding:8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--fg);width:100%}
+textarea{min-height:90px;resize:vertical}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.row>label{flex:1 1 200px}
+.hint{font-size:12px;color:var(--muted);margin:0}
+.notice{font-size:13px;color:var(--muted);padding:10px 12px}
+@media (prefers-reduced-motion: no-preference){ body.flash{animation:flash 1.2s ease-out} @keyframes flash{0%{background:#3a3000}100%{background:var(--bg)}} }
+</style>
+</head>
+<body>
+<header>
+  <h1>講義アシスト</h1>
+  <div id="status">設定（右下の歯車）でキーと科目を入れてから開始</div>
+  <div id="meter" aria-hidden="true"><div id="meterBar"></div><div id="meterThr"></div></div>
+  <button id="btnStart" class="primary">開始</button>
+</header>
+<main>
+  <section class="pane" aria-label="文字起こし">
+    <h2>文字起こし</h2>
+    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。</p></div>
+  </section>
+  <section id="side">
+    <div class="pane" aria-label="検知した質問">
+      <h2>検知した質問</h2>
+      <div id="qlog" class="scroll"></div>
+    </div>
+    <div class="pane" aria-label="回答候補">
+      <h2 id="ansHead">回答候補</h2>
+      <div id="alog" class="scroll"></div>
+    </div>
+  </section>
+</main>
+<footer>
+  <button id="btnClear">クリア</button>
+  <button id="btnSave">ログ保存</button>
+  <button id="btnCopy">ログをコピー</button>
+  <span class="spacer"></span>
+  <span id="count">質問 0 件</span>
+  <button id="btnSettings" aria-label="設定">⚙ 設定</button>
+</footer>
+
+<dialog id="dlg">
+  <form method="dialog" id="settingsForm">
+    <h3>設定</h3>
+    <div class="row">
+      <label>科目名<input type="text" id="course" placeholder="内部統制論"></label>
+    </div>
+    <div class="row">
+      <label>Gemini APIキー（文字起こし）<input type="password" id="gkey" autocomplete="off" placeholder="AIza..."></label>
+      <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option></select></label>
+    </div>
+    <div class="row">
+      <label>回答候補の提供元<select id="llm"><option value="claude">Claude Haiku</option><option value="gemini">Gemini Flash</option><option value="off">出さない（検知だけ）</option></select></label>
+      <label>Anthropic APIキー（Claudeを使う時）<input type="password" id="akey" autocomplete="off" placeholder="sk-ant-..."></label>
+    </div>
+    <div class="row">
+      <label>無音と見なす秒数<select id="silence"><option value="0.5">0.5</option><option value="0.6" selected>0.6</option><option value="0.8">0.8</option><option value="1.0">1.0</option></select></label>
+      <label><span>疑い（橙）にも回答候補</span><select id="answerWeak"><option value="no" selected>出さない</option><option value="yes">出す</option></select></label>
+      <label><span>マイクの音声処理</span><select id="rawMic"><option value="raw" selected>切る（遠くの声向け）</option><option value="auto">端末に任せる</option></select></label>
+    </div>
+    <label>レジュメ（PDF か テキスト。回答の根拠と、用語の聞き取りに使う）
+      <input type="file" id="notesFile" accept=".pdf,.txt,.md,text/plain,application/pdf">
+    </label>
+    <label>レジュメの本文（貼り付けでも可）<textarea id="notes" placeholder="ここに貼るか、上でファイルを選ぶ"></textarea></label>
+    <p class="hint" id="notesInfo">レジュメなし</p>
+    <p class="hint">キーとレジュメはこの端末のブラウザにだけ保存される。</p>
+    <div class="row">
+      <button type="submit" class="primary" id="btnSaveSettings">保存</button>
+      <button type="button" id="btnCloseSettings">閉じる</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+(() => {
+'use strict';
+const $ = (id) => document.getElementById(id);
+const SR = 16000, BLOCK = 1600;
+const GEMINI_URL = (m) => 'https://generativelanguage.googleapis.com/v1beta/models/' + m + ':generateContent';
+const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const LS_KEY = 'lq_settings_v1';
+
+/* ---------------- 設定 ---------------- */
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', notes:'', notesName:'' };
+let cfg = Object.assign({}, defaults);
+function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
+function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
+
+/* ---------------- 用語バイアス ---------------- */
+const STOP = new Set('講義 本日 予定 以下 以上 場合 必要 可能 当該 一定 理解 説明 参考 資料 内容 全体 部分 関係 関連 重要 基本 具体 具体的 一般 一般的 今回 次回 前回 担当 講師 大学 大学院 研究 研究科 関西 学院 関西学院 株式 会社 株式会社 取組 取り組み 実施 対応 活用 提供 次第 以降 以前 現在 当時 年度 日本 米国 世界 会計 経営 事業 業務 企業 組織 制度 概念 本質 目的 目標 検討 議論 水準 程度'.split(' '));
+function buildVocab(text, limit){
+  limit = limit || 110; const cnt = new Map();
+  const add = (m) => { for (const t of m) cnt.set(t, (cnt.get(t) || 0) + 1); };
+  if (text) { add(text.match(/[一-龥々]{2,8}/g) || []); add((text.match(/[ァ-ヴー・]{3,}/g) || []).map(s => s.replace(/^・+|・+$/g, ''))); add(text.match(/[A-Z][A-Za-z\-]{1,}[A-Z0-9a-z]*/g) || []); }
+  const terms = [];
+  const sorted = [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 300);
+  for (const [t, n] of sorted) { if (n < 2 || STOP.has(t) || terms.includes(t) || /^[0-9０-９年月日]+$/.test(t) || t.length < 2) continue; terms.push(t); }
+  const out = []; let total = 0;
+  for (const t of terms) { if (total + t.length + 1 > limit) continue; out.push(t); total += t.length + 1; }
+  return out.join('、');
+}
+
+/* ---------------- 質問検知 ---------------- */
+const INTERROG = /(何|なに|なん|なぜ|どうして|どう|どの|どれ|どこ|誰|だれ|いつ|いくつ|いくら|どんな|どのよう|どちら|どっち|いかが)/;
+const STRONG = [/分か(る|り)(人|方|ます)/, /わか(る|り)(人|方|ます)/, /知って(る|いる)(人|方)/, /知っていますか/, /答えられ(る|ます)/, /言える(人|方)/, /(誰|だれ|どなた)か(?!ら)/, /(人|方|の|は|が)いますか/, /手を挙げ/, /挙手/, /どう思(う|い)/, /どうです/, /いかが/, /どうでしょう/, /と思います?か/, /考えてみ/, /聞いてみ/, /何でしょう/, /なんでしょう/, /何だと思/, /なんだと思/, /どれでしょう/, /なぜでしょう/, /どうしてでしょう/, /説明(できる|できます|して(みて|もら))/, /何が違/, /違いは/, /ありますか/, /ないですか/, /ませんか/];
+const END_Q = /(か|のか|ですか|ますか|でしょうか|だろうか|ませんか|ましょうか)$/;
+const END_Q_WEAK = /(かな|かね|ですかね|ますかね|ですかな)$/;
+const END_FILLER = /(というか|と言いますか|といいますか|いいますか|というのか|なんか|とか|ばかりか|どころか|ほか|せいか|ためか)$/;
+const END_SOFT = /(でしょう|だろう|と思います|と思う|ですよね|でしょ|よね)$/;
+const INTERROG_NEG = /((どの|どんな|どこ|誰|だれ|何|なに|いつ)\S{0,6}(でも|であっても|にも|にせよ|だって)|(何|なに)か(?!$)|いくつか|いつか)/;
+const ENUM = /か\S{1,10}か$/, ENUM_NEG = /(でしょう|ます|です|ません|ない|いる|ある|する|ている|の)か$/;
+const TAIL = /[。．、，!！…・「」『』\s]+$/, HEAD = /^[。．、，!！…・「」『』\s]+/;
+function detectQuestion(text){
+  let t = text.replace(TAIL, '').replace(HEAD, ''); if (!t) return [0, ''];
+  const hasQ = /[?？]/.test(text);
+  const body = t.replace(/[?？]+$/, '').replace(TAIL, '');
+  let score = 0; const reasons = [];
+  if (hasQ) { score += 2; reasons.push('？'); }
+  if (END_Q_WEAK.test(body)) { score += 2; reasons.push('文末かな'); }
+  else if (END_Q.test(body) && !END_FILLER.test(body)) { score += 3; reasons.push('文末か'); if (ENUM.test(body) && !ENUM_NEG.test(body)) { score -= 1; reasons.push('列挙'); } }
+  for (const p of STRONG) { if (p.test(body)) { score += 3; reasons.push('呼びかけ'); break; } }
+  if (INTERROG.test(body) && !INTERROG_NEG.test(body)) { score += 1; reasons.push('疑問詞'); if (END_SOFT.test(body)) score += 1; }
+  if (/(皆さん|みなさん|みんな|あなた|君|さん、)/.test(body)) { score += 1; reasons.push('対象'); }
+  const why = [...new Set(reasons)].join('・');
+  if (score >= 3) return [2, why]; if (score === 2) return [1, why]; return [0, ''];
+}
+
+/* ---------------- 音声 ---------------- */
+const A = { running:false, ctx:null, stream:null, proc:null, src:null, gain:null, resample:null, pending:new Float32Array(0), wake:null,
+  noise:0.004, buf:[], preroll:[], speechBlocks:0, trailing:0, collecting:false, chunkQ:[], busy:false, recent:[], qid:0, lastSent:['',0], nq:0, lines:[], vocab:'' };
+function makeResampler(inRate, outRate){
+  const ratio = inRate / outRate; const win = Math.max(1, Math.round(ratio)); let carry = new Float32Array(0); let pos = 0;
+  return (input) => {
+    const x = new Float32Array(carry.length + input.length); x.set(carry); x.set(input, carry.length);
+    const n = x.length; const out = [];
+    while (pos + win <= n) { let s = 0; const b = Math.floor(pos); for (let k = 0; k < win; k++) s += x[b + k]; out.push(s / win); pos += ratio; }
+    const keep = Math.floor(pos); carry = x.slice(keep); pos -= keep; return Float32Array.from(out);
+  };
+}
+function setMeter(rms, thr, sp){ $('meterBar').style.width = Math.min(120, rms * 1200) + 'px'; $('meterBar').style.background = sp ? 'var(--ok)' : '#2e7d32'; $('meterThr').style.left = Math.min(118, thr * 1200) + 'px'; }
+function onBlock(blk){
+  let s = 0; for (let i = 0; i < blk.length; i++) s += blk[i] * blk[i]; const rms = Math.sqrt(s / blk.length) + 1e-9;
+  if (rms < A.noise * 1.5) A.noise = 0.95 * A.noise + 0.05 * rms;
+  const thr = Math.max(A.noise * 3, 0.006); const sp = rms > thr; setMeter(rms, thr, sp);
+  const silBlocks = Math.max(1, Math.round(parseFloat(cfg.silence || '0.6') / 0.1)), maxBlocks = 120, minSpeech = 8;
+  if (!A.collecting) { A.preroll.push(blk); if (A.preroll.length > 3) A.preroll.shift(); if (sp) { A.collecting = true; A.buf = A.preroll.slice(); A.preroll = []; A.speechBlocks = 1; A.trailing = 0; } return; }
+  A.buf.push(blk); if (sp) { A.speechBlocks++; A.trailing = 0; } else A.trailing++;
+  if (A.trailing >= silBlocks || A.buf.length >= maxBlocks) {
+    if (A.speechBlocks >= minSpeech) { const total = A.buf.reduce((a, b) => a + b.length, 0); const audio = new Float32Array(total); let o = 0; for (const b of A.buf) { audio.set(b, o); o += b.length; } A.chunkQ.push({ t: Date.now(), audio }); pumpASR(); }
+    A.buf = []; A.speechBlocks = 0; A.trailing = 0; A.collecting = false;
+  }
+}
+function onAudio(input){
+  const y = A.resample(input);
+  const merged = new Float32Array(A.pending.length + y.length); merged.set(A.pending); merged.set(y, A.pending.length);
+  let i = 0; while (i + BLOCK <= merged.length) { onBlock(merged.slice(i, i + BLOCK)); i += BLOCK; }
+  A.pending = merged.slice(i);
+}
+async function start(){
+  formToCfg(); saveCfg();
+  if (!cfg.gkey) { setStatus('Geminiのキーが無い。設定に入れてから開始。'); openSettings(); return; }
+  try {
+    const raw = cfg.rawMic !== 'auto';
+    const constraints = { audio: raw ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false } : true };
+    A.stream = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); return; }
+  A.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  await A.ctx.resume();
+  A.resample = makeResampler(A.ctx.sampleRate, SR);
+  A.src = A.ctx.createMediaStreamSource(A.stream);
+  A.proc = A.ctx.createScriptProcessor(4096, 1, 1);
+  A.gain = A.ctx.createGain(); A.gain.gain.value = 0;    // 音は鳴らさない（Safariは出力に繋がないと処理が走らない）
+  A.proc.onaudioprocess = (ev) => { if (A.running) onAudio(ev.inputBuffer.getChannelData(0)); };
+  A.src.connect(A.proc); A.proc.connect(A.gain); A.gain.connect(A.ctx.destination);
+  A.vocab = buildVocab(cfg.notes);
+  A.running = true;
+  $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
+  $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? cfg.asrModel : 'claude-haiku-5-5') + (cfg.notes ? '・レジュメ有' : '') + '）');
+  setStatus('聞き取り中（' + cfg.asrModel + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
+  try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+function stop(){
+  A.running = false;
+  try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
+  try { A.stream && A.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  try { A.ctx && A.ctx.close(); } catch (e) {}
+  try { A.wake && A.wake.release(); } catch (e) {}
+  A.wake = null; A.pending = new Float32Array(0); A.buf = []; A.collecting = false;
+  $('btnStart').textContent = '開始'; $('btnStart').className = 'primary'; setStatus('停止中');
+}
+
+/* ---------------- WAV ---------------- */
+function toWav(f32){
+  const n = f32.length; const buf = new ArrayBuffer(44 + n * 2); const v = new DataView(buf);
+  const ws = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  ws(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); ws(8, 'WAVE'); ws(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, SR, true); v.setUint32(28, SR * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); ws(36, 'data'); v.setUint32(40, n * 2, true);
+  let o = 44; for (let i = 0; i < n; i++) { const s = Math.max(-1, Math.min(1, f32[i])); v.setInt16(o, s < 0 ? s * 32768 : s * 32767, true); o += 2; }
+  return buf;
+}
+function b64(buf){ const u8 = new Uint8Array(buf); let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); }
+
+/* ---------------- 文字起こし（Gemini） ---------------- */
+const SILENCE_MARKS = ['無音', '雑音', '聞き取れ', '音声なし', '発話なし', '該当なし', 'なし'];
+function asrPrompt(sec){
+  const c = cfg.course || '大学院の授業';
+  let p = 'これは' + c + 'の講義の録音の一部（約' + Math.round(sec) + '秒）です。話された日本語を逐語的に文字起こししてください。\n- 要約・言い換え・補足はしない。言い淀みや相づちは省いてよいが、言葉は変えない。\n- 文ごとに改行する。疑問文の文末には「？」を付ける。\n- 無音や雑音だけで言葉が無いときは何も出力しない。\n- 出力は文字起こしのテキストのみ。前置き・説明・記号は書かない。';
+  if (A.vocab) p += '\n用語（この授業でよく出る語。聞こえたらこの表記にする）: ' + A.vocab;
+  return p;
+}
+async function geminiJson(model, body){
+  let gen = body.generationConfig;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetch(GEMINI_URL(model) + '?key=' + encodeURIComponent(cfg.gkey), { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify(body) });
+    if (r.ok) return r.json();
+    const txt = await r.text();
+    if (r.status === 400 && gen && gen.thinkingConfig) { delete gen.thinkingConfig; continue; }
+    if ((r.status === 429 || r.status >= 500) && attempt < 2) { await new Promise(res => setTimeout(res, 1000)); continue; }
+    throw new Error('Gemini HTTP ' + r.status + ' ' + txt.slice(0, 160));
+  }
+  throw new Error('Gemini: 再試行しても失敗');
+}
+async function transcribe(audio){
+  const body = { contents:[{ role:'user', parts:[{ text: asrPrompt(audio.length / SR) }, { inline_data:{ mime_type:'audio/wav', data: b64(toWav(audio)) } }] }], generationConfig:{ temperature:0, maxOutputTokens:1024, thinkingConfig:{ thinkingBudget:0 } } };
+  const j = await geminiJson(cfg.asrModel, body);
+  const c = (j.candidates || [])[0]; if (!c) return [];
+  const text = ((c.content || {}).parts || []).map(p => p.text || '').join('');
+  const out = [];
+  for (let ln of text.split('\n')) { ln = ln.trim().replace(/^[-・*•「」]+|[-・*•「」]+$/g, ''); if (!ln) continue; const core = ln.replace(/^[（）()\[\]【】\s]+|[（）()\[\]【】\s]+$/g, ''); if (SILENCE_MARKS.includes(core) || (core.length <= 6 && SILENCE_MARKS.some(m => core.includes(m)))) continue; out.push(ln); }
+  return out;
+}
+async function pumpASR(){
+  if (A.busy || !A.chunkQ.length) return; A.busy = true;
+  try {
+    while (A.chunkQ.length) {
+      let { t, audio } = A.chunkQ.shift(); let extra = 0;
+      while (A.chunkQ.length && extra < 4) { const nx = A.chunkQ.shift(); const gap = new Float32Array(Math.round(SR * 0.3)); const m = new Float32Array(audio.length + gap.length + nx.audio.length); m.set(audio); m.set(gap, audio.length); m.set(nx.audio, audio.length + gap.length); audio = m; t = nx.t; extra++; }
+      const t0 = Date.now(); let texts;
+      try { texts = await transcribe(audio); } catch (e) { texts = ['[文字起こし失敗: ' + e.message + ']']; }
+      const lat = (Date.now() - t) / 1000, proc = (Date.now() - t0) / 1000;
+      for (const tx of texts) handleSegment(tx, lat, proc, audio.length / SR);
+    }
+  } finally { A.busy = false; }
+}
+function handleSegment(tx, lat, proc, sec){
+  const [lv, why] = detectQuestion(tx); const now = new Date(); const ts = hhmmss(now);
+  A.recent.push('[' + ts + '] ' + tx); if (A.recent.length > 14) A.recent.shift();
+  let qid = null; const minLevel = cfg.answerWeak === 'yes' ? 1 : 2;
+  if (cfg.llm !== 'off' && lv >= minLevel && !(tx === A.lastSent[0] && Date.now() - A.lastSent[1] < 10000)) {
+    qid = ++A.qid; A.lastSent = [tx, Date.now()]; const ctx = A.recent.slice(0, -1).slice(-10).join('\n'); askAnswer(qid, tx, ctx);
+  }
+  A.lines.push({ kind:'seg', t: now, text: tx, level: lv });
+  const tr = $('transcript'); const notice = tr.querySelector('.notice'); if (notice) notice.remove();
+  const p = document.createElement('p'); p.className = 'line' + (lv === 2 ? ' q2' : lv === 1 ? ' q1' : '');
+  p.innerHTML = '<span class="ts">' + ts + '</span><span class="tx"></span>' + (lv ? '<span class="why"></span>' : '');
+  p.querySelector('.tx').textContent = (lv === 2 ? '❓ ' : lv === 1 ? '? ' : '') + tx;
+  if (lv) p.querySelector('.why').textContent = '← ' + (lv === 2 ? '質問' : '質問？') + '（' + why + '）';
+  tr.appendChild(p); tr.scrollTop = tr.scrollHeight;
+  if (lv) {
+    A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
+    const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
+    if (lv === 2) { document.body.classList.remove('flash'); void document.body.offsetWidth; document.body.classList.add('flash'); }
+    if (qid) { const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight; }
+  }
+  setStatus('遅れ ' + lat.toFixed(1) + '秒（処理 ' + proc.toFixed(1) + '秒／音声 ' + sec.toFixed(1) + '秒）  待ち ' + A.chunkQ.length);
+}
+
+/* ---------------- 回答候補 ---------------- */
+const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 学生への質問」「判定: 修辞的な問い（答え不要）」「判定: 質問ではない」のいずれか。\n学生への質問のときだけ、その場で口頭で答えるための案を続ける:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n根拠: 配付資料の該当箇所（ページ番号や見出し）。無ければ「資料外」\n全体で6行以内・150字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
+async function askAnswer(qid, q, ctx){
+  const user = '【直前の講義の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n【検知した発言（これについて判定と回答案）】\n' + q;
+  const t0 = Date.now(); let text = '', err = '';
+  try {
+    if (cfg.llm === 'gemini') {
+      let sys = ROLE(cfg.course); if (cfg.notes) sys += '\n\n【配付資料（レジュメ）】\n' + cfg.notes;
+      const body = { systemInstruction:{ parts:[{ text: sys }] }, contents:[{ role:'user', parts:[{ text: user }] }], generationConfig:{ temperature:0.2, maxOutputTokens:400, thinkingConfig:{ thinkingBudget:0 } } };
+      const j = await geminiJson(cfg.asrModel, body); const c = (j.candidates || [])[0]; text = c ? ((c.content || {}).parts || []).map(p => p.text || '').join('').trim() : '';
+    } else {
+      if (!cfg.akey) throw new Error('Anthropicのキーが無い（設定）');
+      const system = [{ type:'text', text: ROLE(cfg.course) }]; if (cfg.notes) system.push({ type:'text', text:'【配付資料（レジュメ）】\n' + cfg.notes, cache_control:{ type:'ephemeral' } });
+      let body = { model:'claude-haiku-5-5', max_tokens:400, system, messages:[{ role:'user', content: user }], thinking:{ type:'disabled' } };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const r = await fetch(ANTHROPIC_URL, { method:'POST', headers:{ 'content-type':'application/json', 'x-api-key': cfg.akey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify(body) });
+        if (!r.ok) { const et = await r.text(); if (r.status === 400 && body.thinking) { delete body.thinking; body.max_tokens = 1500; continue; } throw new Error('Claude HTTP ' + r.status + ' ' + et.slice(0, 160)); }
+        const j = await r.json(); text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim();
+        if (!text && j.stop_reason === 'max_tokens' && body.max_tokens < 1500) { body.max_tokens = 1500; continue; }
+        break;
+      }
+    }
+  } catch (e) { err = e.message; }
+  const sec = ((Date.now() - t0) / 1000).toFixed(1);
+  const box = $('ans' + qid); if (!box) return; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + q + '　（' + sec + '秒）';
+  A.lines.push({ kind:'answer', q, answer: err ? '[失敗: ' + err + ']' : text, sec });
+  if (err) { const p = document.createElement('p'); p.className = 'err'; p.textContent = '回答生成に失敗: ' + err; box.appendChild(p); }
+  else for (const ln of text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え')) p.className = 'a'; p.textContent = ln; box.appendChild(p); }
+  $('alog').scrollTop = $('alog').scrollHeight;
+}
+
+/* ---------------- ログ ---------------- */
+function hhmmss(d){ return d.toTimeString().slice(0, 8); }
+function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
+$('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_log_' + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
+$('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
+$('btnClear').addEventListener('click', () => { $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; A.lines = []; A.nq = 0; $('count').textContent = '質問 0 件'; });
+
+/* ---------------- 設定UI ---------------- */
+function setStatus(s){ $('status').textContent = s; }
+function openSettings(){ cfgToForm(); $('dlg').showModal(); }
+$('btnSettings').addEventListener('click', openSettings);
+$('btnCloseSettings').addEventListener('click', () => $('dlg').close());
+$('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
+$('notes').addEventListener('input', () => { cfg.notesName = ''; updateNotesInfo(); });
+$('notesFile').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0]; if (!f) return; setStatus('レジュメを読み込み中…');
+  try {
+    let text = '';
+    if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') {
+      const pdfjs = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs');
+      pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+      const doc = await pdfjs.getDocument({ data: new Uint8Array(await f.arrayBuffer()) }).promise; const parts = [];
+      for (let i = 1; i <= doc.numPages; i++) { const pg = await doc.getPage(i); const tc = await pg.getTextContent(); parts.push('--- p' + i + ' ---\n' + tc.items.map(it => it.str).join(' ')); }
+      text = '# ' + f.name + '\n' + parts.join('\n');
+    } else text = '# ' + f.name + '\n' + await f.text();
+    if (text.length > 150000) text = text.slice(0, 150000) + '\n…（以下省略）';
+    $('notes').value = text; cfg.notesName = f.name; updateNotesInfo(); setStatus('レジュメを読み込んだ（' + text.length.toLocaleString() + ' 文字）。保存を押す');
+  } catch (err) { setStatus('レジュメを読めなかった: ' + err.message + '。本文を貼り付けで入れる'); }
+});
+$('btnStart').addEventListener('click', () => { if (A.running) stop(); else start(); });
+document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && A.running && !A.wake) { try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {} } });
+
+loadCfg(); cfgToForm();
+if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
+})();
+</script>
+</body>
+</html>
