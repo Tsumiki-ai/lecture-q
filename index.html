@@ -136,6 +136,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label><span>疑い（橙）にも回答候補</span><select id="answerWeak"><option value="no" selected>出さない</option><option value="yes">出す</option></select></label>
       <label><span>マイクの音声処理</span><select id="rawMic"><option value="raw" selected>切る（遠くの声向け）</option><option value="auto">端末に任せる</option></select></label>
       <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
+      <label><span>文字起こしに用語を渡す</span><select id="asrVocab"><option value="no" selected>渡さない（素の文字起こし）</option><option value="yes">レジュメの用語を渡す（無音時に捏造しやすい）</option></select></label>
       <label><span>録音も残す</span><select id="rec"><option value="yes" selected>残す（停止後に「録音を保存」で書き出す）</option><option value="no">残さない</option></select></label>
     </div>
     <div class="row">
@@ -165,13 +166,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -232,7 +233,7 @@ function setMeter(rms, thr, sp){ if (cfg.quiet === 'yes') return; $('meterBar').
 function onBlock(blk){
   let s = 0; for (let i = 0; i < blk.length; i++) s += blk[i] * blk[i]; const rms = Math.sqrt(s / blk.length) + 1e-9;
   if (rms < A.noise * 1.5) A.noise = 0.95 * A.noise + 0.05 * rms;
-  const thr = Math.max(A.noise * 3, 0.006); const sp = rms > thr && A.rawRms > Math.max(A.noiseRaw * 2.5, 0.0005); setMeter(rms, thr, sp);
+  const thr = Math.max(A.noise * 3, 0.006); const sp = rms > thr && A.rawRms > Math.max(A.noiseRaw * 2, 0.0001); setMeter(rms, thr, sp);
   const silBlocks = Math.max(1, Math.round(parseFloat(cfg.silence || '0.6') / 0.1)), maxBlocks = 120, minSpeech = 8;
   if (!A.collecting) { A.preroll.push(blk); if (A.preroll.length > 3) A.preroll.shift(); if (sp) { A.collecting = true; A.buf = A.preroll.slice(); A.preroll = []; A.speechBlocks = 1; A.trailing = 0; } return; }
   A.buf.push(blk); if (sp) { A.speechBlocks++; A.trailing = 0; } else A.trailing++;
@@ -248,9 +249,10 @@ function onAudio(input){
   let s = 0; for (let i = 0; i < y.length; i++) s += y[i] * y[i]; const rms = Math.sqrt(s / Math.max(1, y.length)) + 1e-9;
   if (rms > A.rawPeak) A.rawPeak = rms;
   // 生の雑音床: 静かな時は速く下がり、上には約1%/秒でしか上がらない。自動ゲインは床も一緒に持ち上げるので、声の判定は生の値で行う
-  A.rawRms = rms; if (rms < A.noiseRaw * 1.5) A.noiseRaw = 0.95 * A.noiseRaw + 0.05 * rms; else A.noiseRaw = Math.min(A.noiseRaw * 1.001, 0.05);
+  A.rawRms = rms; if (rms < A.noiseRaw * 1.5) A.noiseRaw = 0.95 * A.noiseRaw + 0.05 * rms; else A.noiseRaw = Math.min(A.noiseRaw * 1.002, 0.05);
   if (rms > A.loud) A.loud = 0.7 * A.loud + 0.3 * rms; else A.loud = 0.999 * A.loud + 0.001 * rms;
   A.agc = Math.max(1, Math.min(60, 0.06 / Math.max(A.loud, 1e-5)));
+  A.agc = Math.max(1, Math.min(A.agc, 0.003 / Math.max(A.noiseRaw, 1e-5)));    // 雑音は閾値0.006の半分までしか持ち上げない
   for (let i = 0; i < y.length; i++) { const v = y[i] * A.agc; y[i] = v > 1 ? 1 : v < -1 ? -1 : v; }
   const merged = new Float32Array(A.pending.length + y.length); merged.set(A.pending); merged.set(y, A.pending.length);
   let i = 0; while (i + BLOCK <= merged.length) { onBlock(merged.slice(i, i + BLOCK)); i += BLOCK; }
@@ -380,7 +382,7 @@ const SILENCE_MARKS = ['無音', '雑音', '聞き取れ', '音声なし', '発�
 function asrPrompt(sec){
   const c = cfg.course || '大学院の授業';
   let p = 'これは' + c + 'の講義の録音の一部（約' + Math.round(sec) + '秒）です。話された日本語を逐語的に文字起こししてください。\n- 要約・言い換え・補足はしない。言い淀みや相づちは省いてよいが、言葉は変えない。\n- 文ごとに改行する。疑問文の文末には「？」を付ける。\n- 無音・雑音・咳・物音だけで言葉が無いときは「[無音]」とだけ書く。聞き取れない部分は飛ばし、推測で埋めない。\n- 出力は文字起こしのテキストのみ。前置き・説明・記号は書かない。';
-  if (A.vocab) p += '\n用語（この授業でよく出る語。聞こえた語の表記を揃えるためだけに使う。聞こえていない語をこの一覧から補ってはいけない）: ' + A.vocab;
+  if (A.vocab && cfg.asrVocab === 'yes') p += '\n用語（この授業でよく出る語。聞こえた語の表記を揃えるためだけに使う。聞こえていない語をこの一覧から補ってはいけない）: ' + A.vocab;
   return p;
 }
 async function geminiJson(model, body){
@@ -623,7 +625,7 @@ function setStatus(s){ $('status').textContent = s; }
 function openSettings(){ cfgToForm(); $('dlg').showModal(); }
 $('btnSettings').addEventListener('click', openSettings);
 $('btnCloseSettings').addEventListener('click', () => $('dlg').close());
-$('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); applyQuiet(); updateGistInfo(); scheduleSync(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
+$('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); applyQuiet(); updateGistInfo(); scheduleSync(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab && cfg.asrVocab === 'yes' ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
 $('notes').addEventListener('input', () => { cfg.notesName = ''; updateNotesInfo(); });
 $('notesFile').addEventListener('change', async (e) => {
   const f = e.target.files && e.target.files[0]; if (!f) return; setStatus('レジュメを読み込み中…');
