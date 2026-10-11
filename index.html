@@ -138,6 +138,10 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
       <label><span>録音も残す</span><select id="rec"><option value="yes" selected>残す（停止後に「録音を保存」で書き出す）</option><option value="no">残さない</option></select></label>
     </div>
+    <div class="row">
+      <label>GitHubトークン（gist権限だけ。入れるとログを自分の秘密のgistへ送り続け、別の端末から読める）<input type="password" id="ghtoken" autocomplete="off" placeholder="ghp_..."></label>
+    </div>
+    <p class="hint" id="gistInfo">共有なし</p>
     <label>レジュメ（PDF か テキスト。回答の根拠と、用語の聞き取りに使う）
       <input type="file" id="notesFile" accept=".pdf,.txt,.md,text/plain,application/pdf">
     </label>
@@ -161,13 +165,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -349,7 +353,7 @@ function tapRecover(){
 document.addEventListener('touchend', tapRecover, { passive: true });
 document.addEventListener('click', tapRecover);
 function stop(){
-  A.running = false; clearInterval(A.diagTimer); recStop(); saveLog();
+  A.running = false; clearInterval(A.diagTimer); recStop(); saveLog(); syncNow();
   try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
   try { A.stream && A.stream.getTracks().forEach(t => { t.onended = null; t.onunmute = null; t.stop(); }); } catch (e) {}
   try { if (A.ctx) A.ctx.onstatechange = null; A.ctx && A.ctx.close(); } catch (e) {}
@@ -458,7 +462,7 @@ $('transcript').addEventListener('click', (e) => { const p = e.target.closest('.
    1文ごとに localStorage に書き、次に開いた時に戻す。 */
 const LOG_KEY = 'lq_log_v1';
 let logTimer = null;
-function scheduleLogSave(){ clearTimeout(logTimer); logTimer = setTimeout(saveLog, 1500); }
+function scheduleLogSave(){ clearTimeout(logTimer); logTimer = setTimeout(saveLog, 1500); scheduleSync(); }
 function saveLog(){
   clearTimeout(logTimer);
   try { localStorage.setItem(LOG_KEY, JSON.stringify({ at: Date.now(), nq: A.nq, lines: A.lines.map(l => l.t instanceof Date ? Object.assign({}, l, { t: l.t.getTime() }) : l) })); }
@@ -489,7 +493,7 @@ function restoreLog(){
   }
   $('count').textContent = '質問 ' + A.nq + ' 件'; tr.scrollTop = tr.scrollHeight; $('qlog').scrollTop = $('qlog').scrollHeight; $('alog').scrollTop = $('alog').scrollHeight;
 }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveLog(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') { saveLog(); syncNow(); } });
 window.addEventListener('pagehide', saveLog);
 
 /* ---------------- 録音（任意・先生の許可が前提） ----------------
@@ -569,12 +573,50 @@ $('btnSave').addEventListener('click', () => { const blob = new Blob([logText()]
 $('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
 $('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
 
+/* ---------------- 別の端末から読めるようにする（秘密のgistへ送る） ----------------
+   設定にGitHubトークン（gist権限のみ）を入れると、ログが変わるたび（10秒に1回まで）と停止時・画面が隠れた時に、
+   自分のアカウントの秘密のgistへ全文を書き込む。gistは1つを使い回し、ファイルは日付＋科目ごと（log_YYYY-MM-DD_科目.txt）。
+   見る側は gist のページを開いて再読み込みするだけ（トークン不要・URLを知っている人だけ見られる）。 */
+const GIST_KEY = 'lq_gist_v1';
+const G = { id:null, url:'', owner:'', at:0, timer:null, busy:false, dirty:false };
+function gistLoad(){ try { const j = JSON.parse(localStorage.getItem(GIST_KEY) || 'null'); if (j && j.id) { G.id = j.id; G.url = j.url || ''; G.owner = j.owner || ''; G.at = j.at || 0; } } catch (e) {} }
+function gistSave(){ try { localStorage.setItem(GIST_KEY, JSON.stringify({ id: G.id, url: G.url, owner: G.owner, at: G.at })); } catch (e) {} }
+function ymd(d){ const z = n => String(n).padStart(2, '0'); return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()); }
+function gistFileName(){ const f = A.lines.find(l => l.t instanceof Date); return 'log_' + ymd(f ? f.t : new Date()) + (cfg.course ? '_' + cfg.course.replace(/[\\/:*?"<>|\s]+/g, '_') : '') + '.txt'; }
+function gistContent(){ return '科目: ' + (cfg.course || '-') + '\n最終更新: ' + new Date().toLocaleString('ja-JP') + '\n質問 ' + A.nq + ' 件\n\n' + logText() + '\n'; }
+function scheduleSync(){ if (!cfg.ghtoken || G.timer) return; G.timer = setTimeout(() => { G.timer = null; syncNow(); }, 10000); }
+async function syncNow(){
+  if (!cfg.ghtoken || !A.lines.length) return;
+  if (G.busy) { G.dirty = true; return; }
+  clearTimeout(G.timer); G.timer = null; G.busy = true; G.dirty = false;
+  try {
+    const files = {}; files[gistFileName()] = { content: gistContent() };
+    const headers = { 'Authorization': 'Bearer ' + cfg.ghtoken, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' };
+    let r = null;
+    if (G.id) r = await fetch('https://api.github.com/gists/' + G.id, { method:'PATCH', headers, body: JSON.stringify({ files }) });
+    if (!r || r.status === 404) r = await fetch('https://api.github.com/gists', { method:'POST', headers, body: JSON.stringify({ description: '講義ログ（lecture-q）', public: false, files }) });
+    if (!r.ok) throw new Error('HTTP ' + r.status + (r.status === 401 ? '（トークンが無効）' : r.status === 403 ? '（gist権限が無いか上限）' : r.status === 422 ? '（内容が大きすぎるか空）' : ''));
+    const j = await r.json();
+    const created = G.id !== j.id;
+    G.id = j.id; G.url = j.html_url || ''; G.owner = (j.owner && j.owner.login) || ''; G.at = Date.now(); gistSave(); updateGistInfo();
+    if (created) setStatus('共有先のgistを作った。設定の「共有先を開く」のURLを他の端末で開く');
+  } catch (e) { setStatus('共有に失敗: ' + e.message); }
+  finally { G.busy = false; if (G.dirty) scheduleSync(); }
+}
+function updateGistInfo(){
+  const el = $('gistInfo'); if (!el) return;
+  if (!cfg.ghtoken) { el.textContent = '共有なし（トークンを入れると別の端末から読める）'; return; }
+  if (!G.id) { el.textContent = '共有先はまだ無い（最初のログが入って10秒後に作られる）'; return; }
+  el.innerHTML = ''; const a = document.createElement('a'); a.href = G.url; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '共有先を開く'; el.appendChild(a);
+  el.appendChild(document.createTextNode('　' + G.url + '（最終送信 ' + (G.at ? new Date(G.at).toLocaleTimeString('ja-JP') : '-') + '）'));
+}
+
 /* ---------------- 設定UI ---------------- */
 function setStatus(s){ $('status').textContent = s; }
 function openSettings(){ cfgToForm(); $('dlg').showModal(); }
 $('btnSettings').addEventListener('click', openSettings);
 $('btnCloseSettings').addEventListener('click', () => $('dlg').close());
-$('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); applyQuiet(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
+$('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); applyQuiet(); updateGistInfo(); scheduleSync(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
 $('notes').addEventListener('input', () => { cfg.notesName = ''; updateNotesInfo(); });
 $('notesFile').addEventListener('change', async (e) => {
   const f = e.target.files && e.target.files[0]; if (!f) return; setStatus('レジュメを読み込み中…');
@@ -597,7 +639,7 @@ window.addEventListener('pageshow', () => { if (A.running) { holdWake(); recover
 window.addEventListener('focus', () => { if (A.running) recover('フォーカス'); });
 
 loadCfg(); if (!cfg.recOn) { cfg.rec = 'yes'; cfg.recOn = 1; saveCfg(); }    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
-applyQuiet(); cfgToForm(); restoreLog(); recCheck();
+applyQuiet(); cfgToForm(); restoreLog(); recCheck(); gistLoad(); updateGistInfo();
 if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
 </script>
