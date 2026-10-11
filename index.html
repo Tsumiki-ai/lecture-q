@@ -251,7 +251,7 @@ function onAudio(input){
   // 自動ゲイン: 処理オフのマイクは音が小さいので、声の大きさを推定して 0.06 付近に正規化（1〜60倍）
   let s = 0; for (let i = 0; i < y.length; i++) s += y[i] * y[i]; const rms = Math.sqrt(s / Math.max(1, y.length)) + 1e-9;
   if (rms > A.rawPeak) A.rawPeak = rms;
-  if (rms > A.loud) A.loud = 0.7 * A.loud + 0.3 * rms; else A.loud = 0.999 * A.loud + 0.001 * rms;
+  if (rms > A.loud) A.loud = 0.995 * A.loud + 0.005 * rms; else A.loud = 0.997 * A.loud + 0.003 * rms;    // 上がる方は約4秒・下がる方は約20秒で追従（咳や近くの物音の1秒でゲインが落ちきらないように）
   A.agc = Math.max(1, Math.min(60, 0.06 / Math.max(A.loud, 1e-5)));
   for (let i = 0; i < y.length; i++) { const v = y[i] * A.agc; y[i] = v > 1 ? 1 : v < -1 ? -1 : v; }
   if (isRt() && A.resample24) { const z = A.resample24(input); const pcm = new Int16Array(z.length); for (let i = 0; i < z.length; i++) { const v = Math.max(-1, Math.min(1, z[i] * A.agc)); pcm[i] = v < 0 ? v * 32768 : v * 32767; } rtSend(pcm); }
