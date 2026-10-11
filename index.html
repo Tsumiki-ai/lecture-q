@@ -295,7 +295,7 @@ async function start(){
    iPadがスリープ／自動ロック／別アプリの音で中断すると、AudioContext が interrupted/suspended になり、
    マイクのトラックが muted か ended になって onaudioprocess が来なくなる。
    復帰の順序: AudioContext.resume → 1.5秒待ってコールバックが戻るか見る → 戻らなければ getUserMedia をやり直して配線し直す。
-   録音中なら新しいストリームで MediaRecorder も作り直す（断片は別セッションとして積まれ、保存時に連結される）。 */
+   録音中なら新しいストリームで MediaRecorder も作り直す（そこから別の本として積まれ、保存は1本ずつ）。スリープ中の音は取れない。 */
 function micConstraints(){ const raw = cfg.rawMic !== 'auto'; return { audio: raw ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false } : true }; }
 function wireAudio(){
   try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
@@ -498,8 +498,8 @@ window.addEventListener('pagehide', saveLog);
 
 /* ---------------- 録音（任意・先生の許可が前提） ----------------
    聞き取りに使っている同じマイク入力を MediaRecorder で30秒ごとに切り、IndexedDB に積む。
-   ページが読み直されても断片は残るので、停止後（または次に開いた時）に「録音を保存」で1本に繋いで書き出す。 */
-const R = { rec:null, sess:0, n:0, db:null, mime:'' };
+   ページが読み直されても断片は残るので、停止後（または次に開いた時）に「録音を保存」で書き出す（開始〜停止が1本。複数本は1本ずつ）。 */
+const R = { rec:null, sess:0, n:0, db:null, mime:'', saveIdx:0 };
 function recDb(){ return new Promise((res, rej) => { if (R.db) return res(R.db); if (!window.indexedDB) return rej(new Error('IndexedDBが無い')); const q = indexedDB.open('lq_rec', 1); q.onupgradeneeded = () => { q.result.createObjectStore('chunks', { keyPath:'id', autoIncrement:true }); }; q.onsuccess = () => { R.db = q.result; res(R.db); }; q.onerror = () => rej(q.error); }); }
 function recTx(mode, fn){ return recDb().then(db => new Promise((res, rej) => { const tx = db.transaction('chunks', mode); const rq = fn(tx.objectStore('chunks')); tx.oncomplete = () => res(rq && rq.result); tx.onerror = () => rej(tx.error); })); }
 function recPut(obj){ return recTx('readwrite', st => st.put(obj)); }
@@ -511,23 +511,28 @@ function recStart(){
   const mimes = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']; R.mime = mimes.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || '';
   try { R.rec = new MediaRecorder(A.stream, Object.assign({ audioBitsPerSecond: 64000 }, R.mime ? { mimeType: R.mime } : {})); }
   catch (e) { setStatus('録音を開始できない: ' + e.message + '（聞き取りは続ける）'); R.rec = null; return; }
-  R.sess = Date.now(); R.n = 0;
+  R.sess = Date.now(); R.n = 0; R.saveIdx = 0;
   R.rec.ondataavailable = (ev) => { if (!ev.data || !ev.data.size) return; R.n++; recPut({ sess: R.sess, i: R.n, t: Date.now(), type: ev.data.type || R.mime, blob: ev.data }).then(() => { $('btnRec').hidden = false; }).catch(e => setStatus('録音の断片を保存できない: ' + (e && e.message))); };
   R.rec.onerror = (ev) => setStatus('録音エラー: ' + (ev.error && ev.error.message || ''));
   try { R.rec.start(30000); } catch (e) { setStatus('録音を開始できない: ' + e.message); R.rec = null; }
 }
 function recStop(){ try { if (R.rec && R.rec.state !== 'inactive') R.rec.stop(); } catch (e) {} R.rec = null; }
 async function recSave(){
+  // 1回の「開始〜停止」（スリープ復帰でマイクを取り直した時もそこで区切り）が1本。本ごとに別ファイルで書き出す。
+  // バイト連結すると2本目以降にファイル頭が混ざって再生できないプレイヤーがあるので、連結はしない。
   let all = [];
   try { all = (await recAll()) || []; } catch (e) { setStatus('録音を読めない: ' + e.message); return; }
   if (!all.length) { setStatus('保存できる録音がない'); $('btnRec').hidden = true; return; }
   all.sort((a, b) => (a.sess - b.sess) || (a.i - b.i));
-  const type = all[0].type || 'audio/mp4'; const ext = /mp4/.test(type) ? 'm4a' : /webm/.test(type) ? 'webm' : 'bin';
-  const blob = new Blob(all.map(c => c.blob), { type });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_rec_' + new Date(all[0].sess).toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.' + ext; document.body.appendChild(a); a.click();
+  const sessions = [...new Set(all.map(c => c.sess))];
+  if (R.saveIdx >= sessions.length) R.saveIdx = 0;
+  const sess = sessions[R.saveIdx]; const chunks = all.filter(c => c.sess === sess);
+  const type = chunks[0].type || 'audio/mp4'; const ext = /mp4/.test(type) ? 'm4a' : /webm/.test(type) ? 'webm' : 'bin';
+  const blob = new Blob(chunks.map(c => c.blob), { type });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_rec_' + new Date(sess).toISOString().slice(0, 16).replace(/[-:T]/g, '') + (sessions.length > 1 ? '_' + (R.saveIdx + 1) : '') + '.' + ext; document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
-  const sessions = new Set(all.map(c => c.sess)).size;
-  setStatus('録音を書き出した（' + (blob.size / 1048576).toFixed(1) + ' MB・' + all.length + ' 片' + (sessions > 1 ? '・' + sessions + ' 回分を連結' : '') + '）。端末に保存できたら「クリア」で消す');
+  R.saveIdx++;
+  setStatus('録音を書き出した（' + (blob.size / 1048576).toFixed(1) + ' MB・' + chunks.length + ' 片' + (sessions.length > 1 ? '・' + R.saveIdx + '/' + sessions.length + ' 本目。もう一度押すと次の本' : '') + '）。全部保存できたら「クリア」で消す');
 }
 async function recCheck(){ try { const all = await recAll(); if (all && all.length) { $('btnRec').hidden = false; if (!A.running) setStatus('前の録音が残っている（' + all.length + ' 片）。「録音を保存」で書き出すか、「クリア」で消す'); } } catch (e) {} }
 $('btnRec').addEventListener('click', recSave);
