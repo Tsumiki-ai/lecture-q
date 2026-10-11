@@ -136,7 +136,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label><span>疑い（橙）にも回答候補</span><select id="answerWeak"><option value="no" selected>出さない</option><option value="yes">出す</option></select></label>
       <label><span>マイクの音声処理</span><select id="rawMic"><option value="raw" selected>切る（遠くの声向け）</option><option value="auto">端末に任せる</option></select></label>
       <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
-      <label><span>録音も残す（先生の許可がある時だけ）</span><select id="rec"><option value="no" selected>残さない</option><option value="yes">残す（停止後に「録音を保存」で書き出す）</option></select></label>
+      <label><span>録音も残す</span><select id="rec"><option value="yes" selected>残す（停止後に「録音を保存」で書き出す）</option><option value="no">残さない</option></select></label>
     </div>
     <label>レジュメ（PDF か テキスト。回答の根拠と、用語の聞き取りに使う）
       <input type="file" id="notesFile" accept=".pdf,.txt,.md,text/plain,application/pdf">
@@ -161,7 +161,7 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'no', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
@@ -596,7 +596,8 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 window.addEventListener('pageshow', () => { if (A.running) { holdWake(); recover('ページ復帰'); } });
 window.addEventListener('focus', () => { if (A.running) recover('フォーカス'); });
 
-loadCfg(); applyQuiet(); cfgToForm(); restoreLog(); recCheck();
+loadCfg(); if (!cfg.recOn) { cfg.rec = 'yes'; cfg.recOn = 1; saveCfg(); }    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
+applyQuiet(); cfgToForm(); restoreLog(); recCheck();
 if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
 </script>
