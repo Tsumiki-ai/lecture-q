@@ -150,14 +150,10 @@ body.quiet .qitem.weak{color:var(--muted)}
     </label>
     <label>レジュメの本文（貼り付けでも可）<textarea id="notes" placeholder="ここに貼るか、上でファイルを選ぶ"></textarea></label>
     <p class="hint" id="notesInfo">レジュメなし</p>
-    <p class="hint">キーとレジュメはこの端末のブラウザにだけ保存される。Safariは7日以上開かないサイトの保存を消すことがあるので、ホーム画面に追加して使うか、下で設定を一度書き出しておく。</p>
+    <p class="hint">キーとレジュメはこの端末のブラウザにだけ保存される。</p>
     <div class="row">
-      <button type="button" id="btnExportCfg">設定を書き出す（キー込み）</button>
-      <label>設定を読み込む<input type="file" id="cfgFile" accept=".json,application/json"></label>
-    </div>
-    <div class="row">
-      <button type="submit" class="primary" id="btnSaveSettings">保存</button>
-      <button type="button" id="btnCloseSettings">保存して閉じる</button>
+      <button type="submit" class="primary" id="btnSaveSettings">保存して閉じる</button>
+      <button type="button" id="btnCancelSettings">キャンセル</button>
     </div>
   </form>
 </dialog>
@@ -698,8 +694,9 @@ function setStatus(s){ $('status').textContent = s; }
 function openSettings(){ loadCfg(); cfgToForm(); $('dlg').showModal(); }    // 開くたびに保存済みの値を読み直す
 window.addEventListener('storage', (e) => { if (e.key === LS_KEY) { loadCfg(); applyQuiet(); } });    // 別のタブで保存したら反映
 $('btnSettings').addEventListener('click', openSettings);
-$('btnCloseSettings').addEventListener('click', () => $('settingsForm').requestSubmit());    // 閉じるでも保存する（入力した内容が消えないように）
-$('dlg').addEventListener('cancel', (e) => { e.preventDefault(); $('settingsForm').requestSubmit(); });    // Esc でも同じ
+function cancelSettings(){ loadCfg(); cfgToForm(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定の変更を取り消した'); }    // 開いてからいじった内容は捨てる
+$('btnCancelSettings').addEventListener('click', cancelSettings);
+$('dlg').addEventListener('cancel', (e) => { e.preventDefault(); cancelSettings(); });    // Esc も同じ
 $('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); applyQuiet(); updateGistInfo(); scheduleSync(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab && cfg.asrVocab === 'yes' ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
 $('notes').addEventListener('input', () => { cfg.notesName = ''; updateNotesInfo(); });
 $('notesFile').addEventListener('change', async (e) => {
@@ -716,12 +713,6 @@ $('notesFile').addEventListener('change', async (e) => {
     if (text.length > 150000) text = text.slice(0, 150000) + '\n…（以下省略）';
     $('notes').value = text; cfg.notesName = f.name; updateNotesInfo(); setStatus('レジュメを読み込んだ（' + text.length.toLocaleString() + ' 文字）。保存を押す');
   } catch (err) { setStatus('レジュメを読めなかった: ' + err.message + '。本文を貼り付けで入れる'); }
-});
-$('btnExportCfg').addEventListener('click', () => { const blob = new Blob([JSON.stringify(cfg, null, 1)], { type:'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_q_settings.json'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); setStatus('設定を書き出した（キー込みなので人に渡さない）'); });
-$('cfgFile').addEventListener('change', async (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  try { const j = JSON.parse(await f.text()); if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('形式が違う'); cfg = Object.assign({}, defaults, j); saveCfg(); applyQuiet(); cfgToForm(); A.vocab = buildVocab(cfg.notes); updateGistInfo(); setStatus('設定を読み込んだ（' + Object.keys(j).length + ' 項目）'); }
-  catch (err) { setStatus('設定を読めなかった: ' + err.message); }
 });
 $('btnStart').addEventListener('click', startClick);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && A.running) { holdWake(); recover('スリープから復帰'); } });
