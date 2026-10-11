@@ -153,7 +153,7 @@ body.quiet .qitem.weak{color:var(--muted)}
     <p class="hint">キーとレジュメはこの端末のブラウザにだけ保存される。</p>
     <div class="row">
       <button type="submit" class="primary" id="btnSaveSettings">保存</button>
-      <button type="button" id="btnCloseSettings">閉じる</button>
+      <button type="button" id="btnCloseSettings">保存して閉じる</button>
     </div>
   </form>
 </dialog>
@@ -693,7 +693,8 @@ function updateGistInfo(){
 function setStatus(s){ $('status').textContent = s; }
 function openSettings(){ cfgToForm(); $('dlg').showModal(); }
 $('btnSettings').addEventListener('click', openSettings);
-$('btnCloseSettings').addEventListener('click', () => $('dlg').close());
+$('btnCloseSettings').addEventListener('click', () => $('settingsForm').requestSubmit());    // 閉じるでも保存する（入力した内容が消えないように）
+$('dlg').addEventListener('cancel', (e) => { e.preventDefault(); $('settingsForm').requestSubmit(); });    // Esc でも同じ
 $('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); applyQuiet(); updateGistInfo(); scheduleSync(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab && cfg.asrVocab === 'yes' ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
 $('notes').addEventListener('input', () => { cfg.notesName = ''; updateNotesInfo(); });
 $('notesFile').addEventListener('change', async (e) => {
