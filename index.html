@@ -130,7 +130,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label>OpenAI APIキー（リアルタイムを選んだ時だけ）<input type="password" id="okey" autocomplete="off" placeholder="sk-..."></label>
     </div>
     <div class="row">
-      <label>回答候補の提供元<select id="llm"><option value="claude">Claude Haiku（最速）</option><option value="sonnet">Claude Sonnet（0.5〜1秒遅いが賢い）</option><option value="gemini">Gemini Flash</option><option value="off">出さない（検知だけ）</option></select></label>
+      <label>回答候補の提供元<select id="llm"><option value="sonnet">Claude Sonnet（既定・賢い）</option><option value="claude">Claude Haiku（0.5〜1秒速い）</option><option value="gemini">Gemini Flash</option><option value="off">出さない（検知だけ）</option></select></label>
       <label>Anthropic APIキー（Claudeを使う時）<input type="password" id="akey" autocomplete="off" placeholder="sk-ant-..."></label>
     </div>
     <div class="row">
@@ -168,7 +168,7 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
@@ -717,7 +717,8 @@ window.addEventListener('pageshow', () => { if (A.running) { holdWake(); recover
 window.addEventListener('focus', () => { if (A.running) recover('フォーカス'); });
 
 loadCfg(); if (!cfg.recOn) { cfg.rec = 'yes'; cfg.recOn = 1; saveCfg(); }
-if (cfg.asrModel === 'gstt') { cfg.asrModel = 'gemini-3.5-flash'; delete cfg.sa; saveCfg(); }    // Google Speech-to-Text は撤去（2026-10-11）    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
+if (cfg.asrModel === 'gstt') { cfg.asrModel = 'gemini-3.5-flash'; delete cfg.sa; saveCfg(); }
+if (!cfg.llmV2) { if (cfg.llm === 'claude') cfg.llm = 'sonnet'; cfg.llmV2 = 1; saveCfg(); }    // 2026-10-11 回答候補の既定を Sonnet に（保存済み設定も一度だけ）    // Google Speech-to-Text は撤去（2026-10-11）    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
 applyQuiet(); cfgToForm(); restoreLog(); recCheck(); gistLoad(); updateGistInfo();
 if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
