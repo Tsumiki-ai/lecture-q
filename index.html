@@ -125,7 +125,8 @@ body.quiet .qitem.weak{color:var(--muted)}
     </div>
     <div class="row">
       <label>Gemini APIキー（文字起こし）<input type="password" id="gkey" autocomplete="off" placeholder="AIza..."></label>
-      <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option></select></label>
+      <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option><option value="gstt">Google Speech-to-Text（専用API・捏造しない・別キー）</option></select></label>
+      <label>Speech-to-Text APIキー（Google Cloud・上でそれを選んだ時だけ）<input type="password" id="skey" autocomplete="off" placeholder="AIza..."></label>
     </div>
     <div class="row">
       <label>回答候補の提供元<select id="llm"><option value="claude">Claude Haiku（最速）</option><option value="sonnet">Claude Sonnet（0.5〜1秒遅いが賢い）</option><option value="gemini">Gemini Flash</option><option value="off">出さない（検知だけ）</option></select></label>
@@ -166,13 +167,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', skey:'', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','skey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','skey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -263,7 +264,8 @@ function startClick(){
 }
 async function start(){
   formToCfg(); saveCfg();
-  if (!cfg.gkey) { setStatus('Geminiのキーが無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
+  const needKey = cfg.asrModel === 'gstt' ? (!cfg.skey && 'Speech-to-Textのキー') : (!cfg.gkey && 'Geminiのキー');
+  if (needKey) { setStatus(needKey + 'が無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
   try { A.stream = await navigator.mediaDevices.getUserMedia(micConstraints()); } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
   if (A.ctx.state !== 'running') { try { await A.ctx.resume(); } catch (e) {} }
   A.resample = makeResampler(A.ctx.sampleRate, SR);
@@ -274,7 +276,7 @@ async function start(){
   A.running = true;
   recStart();
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
-  $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? cfg.asrModel : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
+  $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? geminiModel() : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
   setStatus('聞き取り中（' + cfg.asrModel + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
   holdWake();
   // 3秒ごとに入力の生存確認。コールバックが来ていなければ復帰処理（AudioContext再開→マイク取り直し）。wake lock も切れていれば取り直す
@@ -394,21 +396,38 @@ async function geminiJson(model, body){
   }
   throw new Error('Gemini: 再試行しても失敗');
 }
+/* Google Cloud Speech-to-Text v1（同期 recognize・60秒まで）。LLM ではないので無音に文を作らず、作業メモも書かない。
+   キーは Google Cloud のプロジェクト（課金有効・Speech-to-Text API 有効）で作る API キー。 */
+async function transcribeGstt(audio){
+  const pcm = toWav(audio).slice(44);
+  const config = { encoding:'LINEAR16', sampleRateHertz: SR, languageCode:'ja-JP', model:'latest_long', enableAutomaticPunctuation:true };
+  if (A.vocab && cfg.asrVocab === 'yes') config.speechContexts = [{ phrases: A.vocab.split('、').filter(Boolean).slice(0, 100) }];
+  const r = await fetch('https://speech.googleapis.com/v1/speech:recognize?key=' + encodeURIComponent(cfg.skey), { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ config, audio:{ content: b64(pcm) } }) });
+  if (!r.ok) { const t = await r.text(); let m = ''; try { m = JSON.parse(t).error.message; } catch (e) { m = t.slice(0, 160); } throw new Error('Speech-to-Text HTTP ' + r.status + ' ' + m); }
+  const j = await r.json();
+  const text = (j.results || []).map(x => ((x.alternatives || [])[0] || {}).transcript || '').join('\n');
+  const out = [];
+  for (const ln of text.replace(/([。？！?])/g, '$1\n').split('\n')) { const t = ln.trim(); if (t) out.push(t); }
+  return out;
+}
+// Gemini が文字起こしの代わりに作業メモ（「音声を聴く：」「**フォーマット確認**」等）を返した時に落とす
+const META_RE = /\*\*|文字起こし|トランスクライブ|音声ファイル|音声データ|音声内容|音声を聴|フォーマット|最終出力|前置き|改行|疑問文に|逐語|^\d+\.\s|^[-・*•]?\s*[（(]?※/;
 async function transcribe(audio){
+  if (cfg.asrModel === 'gstt') return transcribeGstt(audio);
   const body = { contents:[{ role:'user', parts:[{ text: asrPrompt(audio.length / SR) }, { inline_data:{ mime_type:'audio/wav', data: b64(toWav(audio)) } }] }], generationConfig:{ temperature:0, maxOutputTokens:1024, thinkingConfig:{ thinkingBudget:0 } } };
-  const j = await geminiJson(cfg.asrModel, body);
+  const j = await geminiJson(geminiModel(), body);
   const c = (j.candidates || [])[0]; if (!c) return [];
   const text = ((c.content || {}).parts || []).map(p => p.text || '').join('');
-  const out = [];
-  for (let ln of text.split('\n')) { ln = ln.trim().replace(/^[-・*•「」]+|[-・*•「」]+$/g, ''); if (!ln) continue; const core = ln.replace(/^[（）()\[\]【】\s]+|[（）()\[\]【】\s]+$/g, ''); if (SILENCE_MARKS.includes(core) || (core.length <= 6 && SILENCE_MARKS.some(m => core.includes(m)))) continue; out.push(ln); }
-  return out;
+  const out = []; let meta = 0;
+  for (let ln of text.split('\n')) { if (META_RE.test(ln.trim())) { meta++; continue; } ln = ln.trim().replace(/^[-・*•「」]+|[-・*•「」]+$/g, ''); if (!ln) continue; const core = ln.replace(/^[（）()\[\]【】\s]+|[（）()\[\]【】\s]+$/g, ''); if (SILENCE_MARKS.includes(core) || (core.length <= 6 && SILENCE_MARKS.some(m => core.includes(m)))) continue; out.push(ln); }
+  return meta >= 2 ? [] : out;    // 作業メモが2行以上なら、その応答は丸ごと捨てる
 }
 async function pumpASR(){
   if (A.busy || !A.chunkQ.length) return; A.busy = true;
   try {
     while (A.chunkQ.length) {
       let { t, audio } = A.chunkQ.shift(); let extra = 0;
-      while (A.chunkQ.length && extra < 4) { const nx = A.chunkQ.shift(); const gap = new Float32Array(Math.round(SR * 0.3)); const m = new Float32Array(audio.length + gap.length + nx.audio.length); m.set(audio); m.set(gap, audio.length); m.set(nx.audio, audio.length + gap.length); audio = m; t = nx.t; extra++; }
+      while (A.chunkQ.length && extra < 4 && (cfg.asrModel !== 'gstt' || audio.length + A.chunkQ[0].audio.length < SR * 55)) { const nx = A.chunkQ.shift(); const gap = new Float32Array(Math.round(SR * 0.3)); const m = new Float32Array(audio.length + gap.length + nx.audio.length); m.set(audio); m.set(gap, audio.length); m.set(nx.audio, audio.length + gap.length); audio = m; t = nx.t; extra++; }
       const t0 = Date.now(); let texts;
       try { texts = await transcribe(audio); } catch (e) { texts = ['[文字起こし失敗: ' + e.message + ']']; }
       const lat = (Date.now() - t) / 1000, proc = (Date.now() - t0) / 1000;
@@ -541,6 +560,7 @@ $('btnRec').addEventListener('click', recSave);
 /* ---------------- 回答候補 ---------------- */
 const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n全体で6行以内・150字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
 // Claudeのモデルと思考オフの指定はモデルごとに違う（Haiku=disabled・Sonnet=between_tools。Opus/Fableはadaptiveしか無く3.5秒以上かかるので載せない）
+function geminiModel(){ return /^gemini/.test(cfg.asrModel) ? cfg.asrModel : 'gemini-3.5-flash'; }
 function claudeModel(){ return cfg.llm === 'sonnet' ? 'claude-sonnet-5-5' : 'claude-haiku-5-5'; }
 function claudeThinking(){ return cfg.llm === 'sonnet' ? { type:'between_tools' } : { type:'disabled' }; }
 async function askAnswer(qid, q, ctx){
@@ -550,7 +570,7 @@ async function askAnswer(qid, q, ctx){
     if (cfg.llm === 'gemini') {
       let sys = ROLE(cfg.course); if (cfg.notes) sys += '\n\n【配付資料（レジュメ）】\n' + cfg.notes;
       const body = { systemInstruction:{ parts:[{ text: sys }] }, contents:[{ role:'user', parts:[{ text: user }] }], generationConfig:{ temperature:0.2, maxOutputTokens:400, thinkingConfig:{ thinkingBudget:0 } } };
-      const j = await geminiJson(cfg.asrModel, body); const c = (j.candidates || [])[0]; text = c ? ((c.content || {}).parts || []).map(p => p.text || '').join('').trim() : '';
+      const j = await geminiJson(geminiModel(), body); const c = (j.candidates || [])[0]; text = c ? ((c.content || {}).parts || []).map(p => p.text || '').join('').trim() : '';
     } else {
       if (!cfg.akey) throw new Error('Anthropicのキーが無い（設定）');
       const system = [{ type:'text', text: ROLE(cfg.course) }]; if (cfg.notes) system.push({ type:'text', text:'【配付資料（レジュメ）】\n' + cfg.notes, cache_control:{ type:'ephemeral' } });
