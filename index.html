@@ -126,9 +126,7 @@ body.quiet .qitem.weak{color:var(--muted)}
     </div>
     <div class="row">
       <label>Gemini APIキー（文字起こし）<input type="password" id="gkey" autocomplete="off" placeholder="AIza..."></label>
-      <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option><option value="oai-rt">OpenAI リアルタイム（gpt-4o-transcribe・話している途中から出る）</option><option value="oai-rt-mini">OpenAI リアルタイム mini（速くて安い）</option><option value="gstt">Google Speech-to-Text（専用API・捏造しない・別キー）</option></select></label>
-      <label>Speech-to-Text の認証（Google Cloud のサービスアカウントの JSON キー。上でそれを選んだ時だけ）<input type="file" id="saFile" accept=".json,application/json"></label>
-      <p class="hint" id="saInfo">未設定</p>
+      <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option><option value="oai-rt">OpenAI リアルタイム（gpt-4o-transcribe・話している途中から出る）</option><option value="oai-rt-mini">OpenAI リアルタイム mini（速くて安い）</option></select></label>
       <label>OpenAI APIキー（リアルタイムを選んだ時だけ）<input type="password" id="okey" autocomplete="off" placeholder="sk-..."></label>
     </div>
     <div class="row">
@@ -170,12 +168,12 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', sa:'', okey:'', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); updateSaInfo(); }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
 function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
@@ -269,7 +267,7 @@ function startClick(){
 }
 async function start(){
   formToCfg(); saveCfg();
-  const needKey = cfg.asrModel === 'gstt' ? (!cfg.sa && 'Speech-to-Text の認証（サービスアカウントのJSON）') : isRt() ? (!cfg.okey && 'OpenAIのキー') : (!cfg.gkey && 'Geminiのキー');
+  const needKey = isRt() ? (!cfg.okey && 'OpenAIのキー') : (!cfg.gkey && 'Geminiのキー');
   if (needKey) { setStatus(needKey + 'が無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
   try { A.stream = await navigator.mediaDevices.getUserMedia(micConstraints()); } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
   if (A.ctx.state !== 'running') { try { await A.ctx.resume(); } catch (e) {} }
@@ -409,7 +407,7 @@ async function geminiJson(model, body){
    まず GA 形式（session.update / type:transcription）で接続し、拒否されたら旧形式（transcription_session.update）で繋ぎ直す。 */
 function isRt(){ return /^oai-rt/.test(cfg.asrModel); }
 function rtModel(){ return cfg.asrModel === 'oai-rt-mini' ? 'gpt-4o-mini-transcribe' : 'gpt-4o-transcribe'; }
-function asrLabel(){ return isRt() ? 'OpenAI リアルタイム ' + rtModel() : cfg.asrModel === 'gstt' ? 'Google Speech-to-Text' : cfg.asrModel; }
+function asrLabel(){ return isRt() ? 'OpenAI リアルタイム ' + rtModel() : cfg.asrModel; }
 const W = { ws:null, gen:0, beta:false, ready:false, buf:[], bufLen:0, partial:'', item:'', retries:0, lastStop:0, gotAny:false };
 function rtSessionMsg(){
   const tr = { model: rtModel(), language: 'ja' }; if (A.vocab && cfg.asrVocab === 'yes') tr.prompt = A.vocab;
@@ -465,51 +463,9 @@ function rtEvent(m){
   if (t === 'input_audio_buffer.speech_stopped') { W.lastStop = Date.now(); return; }
 }
 
-/* Google Cloud Speech-to-Text v1（同期 recognize・60秒まで）。LLM ではないので無音に文を作らず、作業メモも書かない。
-   この API は API キーを受け付けない（401 "API keys are not supported"）ので、サービスアカウントの JSON キーで
-   JWT を署名（WebCrypto RS256）→ oauth2.googleapis.com/token でアクセストークン（1時間）に替えて Bearer で呼ぶ。
-   JSON は設定でファイル選択して localStorage に置く（他のキーと同じ扱い）。役割は「Cloud Speech クライアント」だけにしておく。 */
-const T = { token:'', exp:0, busy:null };
-function b64url(buf){ return btoa(String.fromCharCode.apply(null, new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
-async function saToken(){
-  if (T.token && Date.now() < T.exp - 120000) return T.token;
-  if (T.busy) return T.busy;
-  T.busy = (async () => {
-    let sa; try { sa = JSON.parse(cfg.sa); } catch (e) { throw new Error('認証JSONが読めない。設定で選び直す'); }
-    if (!sa || sa.type !== 'service_account' || !sa.client_email || !sa.private_key) throw new Error('サービスアカウントのJSONキーではない');
-    const enc = new TextEncoder(); const now = Math.floor(Date.now() / 1000); const aud = sa.token_uri || 'https://oauth2.googleapis.com/token';
-    const hdr = b64url(enc.encode(JSON.stringify({ alg:'RS256', typ:'JWT' })));
-    const claim = b64url(enc.encode(JSON.stringify({ iss: sa.client_email, scope:'https://www.googleapis.com/auth/cloud-platform', aud, iat: now, exp: now + 3600 })));
-    const der = Uint8Array.from(atob(sa.private_key.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '')), c => c.charCodeAt(0));
-    const key = await crypto.subtle.importKey('pkcs8', der, { name:'RSASSA-PKCS1-v1_5', hash:'SHA-256' }, false, ['sign']);
-    const sig = await crypto.subtle.sign('RSASSA-PKCS1-v1_5', key, enc.encode(hdr + '.' + claim));
-    const jwt = hdr + '.' + claim + '.' + b64url(sig);
-    const r = await fetch(aud, { method:'POST', headers:{ 'content-type':'application/x-www-form-urlencoded' }, body: 'grant_type=' + encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer') + '&assertion=' + jwt });
-    if (!r.ok) throw new Error('トークン取得 HTTP ' + r.status + ' ' + (await r.text()).slice(0, 160));
-    const j = await r.json(); T.token = j.access_token || ''; T.exp = Date.now() + (j.expires_in || 3600) * 1000;
-    if (!T.token) throw new Error('トークンが空');
-    return T.token;
-  })();
-  try { return await T.busy; } finally { T.busy = null; }
-}
-async function transcribeGstt(audio){
-  const pcm = toWav(audio).slice(44);
-  const config = { encoding:'LINEAR16', sampleRateHertz: SR, languageCode:'ja-JP', model:'latest_long', enableAutomaticPunctuation:true };
-  if (A.vocab && cfg.asrVocab === 'yes') config.speechContexts = [{ phrases: A.vocab.split('、').filter(Boolean).slice(0, 100) }];
-  const token = await saToken();
-  const r = await fetch('https://speech.googleapis.com/v1/speech:recognize', { method:'POST', headers:{ 'content-type':'application/json', 'authorization':'Bearer ' + token }, body: JSON.stringify({ config, audio:{ content: b64(pcm) } }) });
-  if (r.status === 401) { T.token = ''; T.exp = 0; }
-  if (!r.ok) { const t = await r.text(); let m = ''; try { m = JSON.parse(t).error.message; } catch (e) { m = t.slice(0, 160); } throw new Error('Speech-to-Text HTTP ' + r.status + ' ' + m); }
-  const j = await r.json();
-  const text = (j.results || []).map(x => ((x.alternatives || [])[0] || {}).transcript || '').join('\n');
-  const out = [];
-  for (const ln of text.replace(/([。？！?])/g, '$1\n').split('\n')) { const t = ln.trim(); if (t) out.push(t); }
-  return out;
-}
 // Gemini が文字起こしの代わりに作業メモ（「音声を聴く：」「**フォーマット確認**」等）を返した時に落とす
 const META_RE = /\*\*|文字起こし|トランスクライブ|音声ファイル|音声データ|音声内容|音声を聴|フォーマット|最終出力|前置き|改行|疑問文に|逐語|^\d+\.\s|^[-・*•]?\s*[（(]?※/;
 async function transcribe(audio){
-  if (cfg.asrModel === 'gstt') return transcribeGstt(audio);
   const body = { contents:[{ role:'user', parts:[{ text: asrPrompt(audio.length / SR) }, { inline_data:{ mime_type:'audio/wav', data: b64(toWav(audio)) } }] }], generationConfig:{ temperature:0, maxOutputTokens:1024, thinkingConfig:{ thinkingBudget:0 } } };
   const j = await geminiJson(geminiModel(), body);
   const c = (j.candidates || [])[0]; if (!c) return [];
@@ -523,7 +479,7 @@ async function pumpASR(){
   try {
     while (A.chunkQ.length) {
       let { t, audio } = A.chunkQ.shift(); let extra = 0;
-      while (A.chunkQ.length && extra < 4 && (cfg.asrModel !== 'gstt' || audio.length + A.chunkQ[0].audio.length < SR * 55)) { const nx = A.chunkQ.shift(); const gap = new Float32Array(Math.round(SR * 0.3)); const m = new Float32Array(audio.length + gap.length + nx.audio.length); m.set(audio); m.set(gap, audio.length); m.set(nx.audio, audio.length + gap.length); audio = m; t = nx.t; extra++; }
+      while (A.chunkQ.length && extra < 4) { const nx = A.chunkQ.shift(); const gap = new Float32Array(Math.round(SR * 0.3)); const m = new Float32Array(audio.length + gap.length + nx.audio.length); m.set(audio); m.set(gap, audio.length); m.set(nx.audio, audio.length + gap.length); audio = m; t = nx.t; extra++; }
       const t0 = Date.now(); let texts;
       try { texts = await transcribe(audio); } catch (e) { texts = ['[文字起こし失敗: ' + e.message + ']']; }
       const lat = (Date.now() - t) / 1000, proc = (Date.now() - t0) / 1000;
@@ -755,21 +711,13 @@ $('notesFile').addEventListener('change', async (e) => {
     $('notes').value = text; cfg.notesName = f.name; updateNotesInfo(); setStatus('レジュメを読み込んだ（' + text.length.toLocaleString() + ' 文字）。保存を押す');
   } catch (err) { setStatus('レジュメを読めなかった: ' + err.message + '。本文を貼り付けで入れる'); }
 });
-function updateSaInfo(){ const el = $('saInfo'); if (!el) return; let m = '未設定'; try { if (cfg.sa) m = '設定済み: ' + JSON.parse(cfg.sa).client_email; } catch (e) { m = '設定済み（内容が不正。選び直す）'; } el.textContent = m; }
-$('saFile').addEventListener('change', async (e) => {
-  const f = e.target.files[0]; if (!f) return;
-  try {
-    const text = await f.text(); const j = JSON.parse(text);
-    if (j.type !== 'service_account' || !j.client_email || !j.private_key) throw new Error('サービスアカウントのJSONキーではない');
-    cfg.sa = text; T.token = ''; T.exp = 0; saveCfg(); updateSaInfo(); setStatus('Speech-to-Text の認証を読み込んだ（' + j.client_email + '）');
-  } catch (err) { setStatus('認証JSONを読めなかった: ' + err.message); }
-});
 $('btnStart').addEventListener('click', startClick);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && A.running) { holdWake(); recover('スリープから復帰'); } });
 window.addEventListener('pageshow', () => { if (A.running) { holdWake(); recover('ページ復帰'); } });
 window.addEventListener('focus', () => { if (A.running) recover('フォーカス'); });
 
-loadCfg(); if (!cfg.recOn) { cfg.rec = 'yes'; cfg.recOn = 1; saveCfg(); }    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
+loadCfg(); if (!cfg.recOn) { cfg.rec = 'yes'; cfg.recOn = 1; saveCfg(); }
+if (cfg.asrModel === 'gstt') { cfg.asrModel = 'gemini-3.5-flash'; delete cfg.sa; saveCfg(); }    // Google Speech-to-Text は撤去（2026-10-11）    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
 applyQuiet(); cfgToForm(); restoreLog(); recCheck(); gistLoad(); updateGistInfo();
 if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
