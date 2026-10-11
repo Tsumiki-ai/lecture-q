@@ -82,6 +82,7 @@ body.quiet .line.q2 .tx,body.quiet .line.q1 .tx{background:transparent;color:var
 body.quiet .line.q1 .tx{border-bottom-style:dotted}
 body.quiet .qitem{color:var(--fg)}
 body.quiet .qitem.weak{color:var(--muted)}
+.line.partial .tx{opacity:.55}
 </style>
 </head>
 <body>
@@ -125,9 +126,10 @@ body.quiet .qitem.weak{color:var(--muted)}
     </div>
     <div class="row">
       <label>Gemini APIキー（文字起こし）<input type="password" id="gkey" autocomplete="off" placeholder="AIza..."></label>
-      <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option><option value="gstt">Google Speech-to-Text（専用API・捏造しない・別キー）</option></select></label>
+      <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option><option value="oai-rt">OpenAI リアルタイム（gpt-4o-transcribe・話している途中から出る）</option><option value="oai-rt-mini">OpenAI リアルタイム mini（速くて安い）</option><option value="gstt">Google Speech-to-Text（専用API・捏造しない・別キー）</option></select></label>
       <label>Speech-to-Text の認証（Google Cloud のサービスアカウントの JSON キー。上でそれを選んだ時だけ）<input type="file" id="saFile" accept=".json,application/json"></label>
       <p class="hint" id="saInfo">未設定</p>
+      <label>OpenAI APIキー（リアルタイムを選んだ時だけ）<input type="password" id="okey" autocomplete="off" placeholder="sk-..."></label>
     </div>
     <div class="row">
       <label>回答候補の提供元<select id="llm"><option value="claude">Claude Haiku（最速）</option><option value="sonnet">Claude Sonnet（0.5〜1秒遅いが賢い）</option><option value="gemini">Gemini Flash</option><option value="off">出さない（検知だけ）</option></select></label>
@@ -168,13 +170,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', sa:'', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', sa:'', okey:'', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); updateSaInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); updateSaInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -236,6 +238,7 @@ function onBlock(blk){
   let s = 0; for (let i = 0; i < blk.length; i++) s += blk[i] * blk[i]; const rms = Math.sqrt(s / blk.length) + 1e-9;
   if (rms < A.noise * 1.5) A.noise = 0.95 * A.noise + 0.05 * rms;
   const thr = Math.max(A.noise * 3, 0.006); const sp = rms > thr; setMeter(rms, thr, sp);
+  if (isRt()) return;    // ストリーミングでは区切りも無音判定もサーバー側
   const silBlocks = Math.max(1, Math.round(parseFloat(cfg.silence || '0.6') / 0.1)), maxBlocks = 120, minSpeech = 8;
   if (!A.collecting) { A.preroll.push(blk); if (A.preroll.length > 3) A.preroll.shift(); if (sp) { A.collecting = true; A.buf = A.preroll.slice(); A.preroll = []; A.speechBlocks = 1; A.trailing = 0; } return; }
   A.buf.push(blk); if (sp) { A.speechBlocks++; A.trailing = 0; } else A.trailing++;
@@ -253,6 +256,7 @@ function onAudio(input){
   if (rms > A.loud) A.loud = 0.7 * A.loud + 0.3 * rms; else A.loud = 0.999 * A.loud + 0.001 * rms;
   A.agc = Math.max(1, Math.min(60, 0.06 / Math.max(A.loud, 1e-5)));
   for (let i = 0; i < y.length; i++) { const v = y[i] * A.agc; y[i] = v > 1 ? 1 : v < -1 ? -1 : v; }
+  if (isRt() && A.resample24) { const z = A.resample24(input); const pcm = new Int16Array(z.length); for (let i = 0; i < z.length; i++) { const v = Math.max(-1, Math.min(1, z[i] * A.agc)); pcm[i] = v < 0 ? v * 32768 : v * 32767; } rtSend(pcm); }
   const merged = new Float32Array(A.pending.length + y.length); merged.set(A.pending); merged.set(y, A.pending.length);
   let i = 0; while (i + BLOCK <= merged.length) { onBlock(merged.slice(i, i + BLOCK)); i += BLOCK; }
   A.pending = merged.slice(i);
@@ -265,20 +269,21 @@ function startClick(){
 }
 async function start(){
   formToCfg(); saveCfg();
-  const needKey = cfg.asrModel === 'gstt' ? (!cfg.sa && 'Speech-to-Text の認証（サービスアカウントのJSON）') : (!cfg.gkey && 'Geminiのキー');
+  const needKey = cfg.asrModel === 'gstt' ? (!cfg.sa && 'Speech-to-Text の認証（サービスアカウントのJSON）') : isRt() ? (!cfg.okey && 'OpenAIのキー') : (!cfg.gkey && 'Geminiのキー');
   if (needKey) { setStatus(needKey + 'が無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
   try { A.stream = await navigator.mediaDevices.getUserMedia(micConstraints()); } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
   if (A.ctx.state !== 'running') { try { await A.ctx.resume(); } catch (e) {} }
-  A.resample = makeResampler(A.ctx.sampleRate, SR);
+  A.resample = makeResampler(A.ctx.sampleRate, SR); A.resample24 = makeResampler(A.ctx.sampleRate, 24000);
   A.cbCount = 0; A.rawPeak = 0; A.loud = 0.002; A.agc = 1; A.lastCb = Date.now(); A.lastMicRetry = 0; A.micRetries = 0; A.recovering = false;
   A.ctx.onstatechange = ctxStateChanged;
   wireAudio();
   A.vocab = buildVocab(cfg.notes);
   A.running = true;
   recStart();
+  if (isRt()) rtConnect();
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
   $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? geminiModel() : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
-  setStatus('聞き取り中（' + cfg.asrModel + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
+  setStatus('聞き取り中（' + asrLabel() + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
   holdWake();
   // 3秒ごとに入力の生存確認。コールバックが来ていなければ復帰処理（AudioContext再開→マイク取り直し）。wake lock も切れていれば取り直す
   clearInterval(A.diagTimer); let lastCount = 0;
@@ -350,14 +355,14 @@ async function holdWake(){
 function tapRecover(){
   if (!A.running) return;
   if (A.ctx && A.ctx.state === 'closed') {    // 閉じられていた時だけ、ユーザー操作の中で作り直す
-    try { A.ctx = new (window.AudioContext || window.webkitAudioContext)(); A.ctx.resume(); A.resample = makeResampler(A.ctx.sampleRate, SR); A.ctx.onstatechange = ctxStateChanged; wireAudio(); } catch (e) {}
+    try { A.ctx = new (window.AudioContext || window.webkitAudioContext)(); A.ctx.resume(); A.resample = makeResampler(A.ctx.sampleRate, SR); A.resample24 = makeResampler(A.ctx.sampleRate, 24000); A.ctx.onstatechange = ctxStateChanged; wireAudio(); } catch (e) {}
   }
   recover('タップ');
 }
 document.addEventListener('touchend', tapRecover, { passive: true });
 document.addEventListener('click', tapRecover);
 function stop(){
-  A.running = false; clearInterval(A.diagTimer); recStop(); saveLog(); syncNow();
+  A.running = false; clearInterval(A.diagTimer); rtClose(); recStop(); saveLog(); syncNow();
   try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
   try { A.stream && A.stream.getTracks().forEach(t => { t.onended = null; t.onunmute = null; t.stop(); }); } catch (e) {}
   try { if (A.ctx) A.ctx.onstatechange = null; A.ctx && A.ctx.close(); } catch (e) {}
@@ -397,6 +402,69 @@ async function geminiJson(model, body){
   }
   throw new Error('Gemini: 再試行しても失敗');
 }
+/* ---------------- OpenAI Realtime（ストリーミング文字起こし） ----------------
+   WebSocket で 24kHz PCM16 を流し続け、サーバー側の無音判定で区切られた発話ごとに delta（途中）と completed（確定）が返る。
+   途中は薄い行で表示し、確定した文だけを handleSegment（質問検知・回答候補・ログ・共有）に渡す。
+   ブラウザからの認証は subprotocol の openai-insecure-api-key.<キー>。キーは設定 okey（本人が貼る）。
+   まず GA 形式（session.update / type:transcription）で接続し、拒否されたら旧形式（transcription_session.update）で繋ぎ直す。 */
+function isRt(){ return /^oai-rt/.test(cfg.asrModel); }
+function rtModel(){ return cfg.asrModel === 'oai-rt-mini' ? 'gpt-4o-mini-transcribe' : 'gpt-4o-transcribe'; }
+function asrLabel(){ return isRt() ? 'OpenAI リアルタイム ' + rtModel() : cfg.asrModel === 'gstt' ? 'Google Speech-to-Text' : cfg.asrModel; }
+const W = { ws:null, gen:0, beta:false, ready:false, buf:[], bufLen:0, partial:'', item:'', retries:0, lastStop:0, gotAny:false };
+function rtSessionMsg(){
+  const tr = { model: rtModel(), language: 'ja' }; if (A.vocab && cfg.asrVocab === 'yes') tr.prompt = A.vocab;
+  const td = { type:'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: Math.round(parseFloat(cfg.silence || '0.6') * 1000) };
+  if (W.beta) return { type:'transcription_session.update', session: { input_audio_format:'pcm16', input_audio_transcription: tr, turn_detection: td, input_audio_noise_reduction: { type:'far_field' } } };
+  return { type:'session.update', session: { type:'transcription', audio: { input: { format: { type:'audio/pcm', rate: 24000 }, transcription: tr, turn_detection: td, noise_reduction: { type:'far_field' } } } } };
+}
+function rtConnect(){
+  if (!A.running || !isRt()) return;
+  const gen = ++W.gen; W.ready = false; W.gotAny = false;
+  const protos = ['realtime', 'openai-insecure-api-key.' + cfg.okey]; if (W.beta) protos.push('openai-beta.realtime-v1');
+  let ws; try { ws = new WebSocket('wss://api.openai.com/v1/realtime?intent=transcription', protos); } catch (e) { setStatus('リアルタイム接続に失敗: ' + e.message); return; }
+  W.ws = ws;
+  ws.onopen = () => { if (gen !== W.gen) return; try { ws.send(JSON.stringify(rtSessionMsg())); } catch (e) {} W.ready = true; W.retries = 0; setStatus('聞き取り中（' + asrLabel() + (W.beta ? '・旧形式' : '') + '）'); };
+  ws.onmessage = (ev) => { if (gen !== W.gen) return; let m; try { m = JSON.parse(ev.data); } catch (e) { return; } rtEvent(m); };
+  ws.onclose = (ev) => {
+    if (gen !== W.gen) return; W.ready = false; W.ws = null; if (!A.running) return;
+    const wait = Math.min(15000, 1000 * Math.pow(2, W.retries++));
+    setStatus('リアルタイム接続が切れた（' + ev.code + (ev.reason ? ' ' + ev.reason.slice(0, 60) : '') + '）。' + Math.round(wait / 1000) + '秒後に再接続');
+    setTimeout(() => { if (A.running && gen === W.gen) rtConnect(); }, wait);
+  };
+}
+function rtClose(){ W.gen++; try { W.ws && W.ws.close(1000); } catch (e) {} W.ws = null; W.ready = false; W.buf = []; W.bufLen = 0; rtPartial(''); }
+function rtSend(pcm){
+  W.buf.push(pcm); W.bufLen += pcm.length;
+  if (W.bufLen > 24000 * 5) { W.buf.shift(); W.bufLen = W.buf.reduce((a, b) => a + b.length, 0); }    // 未接続中は直近5秒だけ持つ
+  if (!W.ready || !W.ws || W.ws.readyState !== 1 || W.bufLen < 4800) return;    // 200ms ごとに送る
+  const all = new Int16Array(W.bufLen); let o = 0; for (const b of W.buf) { all.set(b, o); o += b.length; } W.buf = []; W.bufLen = 0;
+  try { W.ws.send(JSON.stringify({ type:'input_audio_buffer.append', audio: b64(all.buffer) })); } catch (e) {}
+}
+function rtPartial(text){
+  const tr = $('transcript'); let el = tr.querySelector('.line.partial');
+  if (!text) { if (el) el.remove(); return; }
+  if (!el) { el = document.createElement('p'); el.className = 'line partial'; el.innerHTML = '<span class="ts"></span><span class="tx"></span>'; tr.appendChild(el); }
+  el.querySelector('.ts').textContent = hhmmss(new Date()); el.querySelector('.tx').textContent = text; tr.scrollTop = tr.scrollHeight;
+}
+function rtEvent(m){
+  const t = m.type || '';
+  if (t === 'error') {
+    const msg = (m.error && m.error.message) || JSON.stringify(m).slice(0, 160);
+    if (!W.gotAny && !W.beta) { W.beta = true; setStatus('旧形式で接続し直す（' + msg.slice(0, 80) + '）'); try { W.ws && W.ws.close(1000); } catch (e) {} return; }
+    setStatus('リアルタイム: ' + msg.slice(0, 160)); return;
+  }
+  if (t === 'conversation.item.input_audio_transcription.delta') { W.gotAny = true; if (m.item_id !== W.item) { W.item = m.item_id; W.partial = ''; } W.partial += m.delta || ''; rtPartial(W.partial); return; }
+  if (t === 'conversation.item.input_audio_transcription.completed') {
+    W.gotAny = true; const tx = (m.transcript || '').trim(); rtPartial(''); W.partial = ''; W.item = '';
+    if (!tx) return; const lat = W.lastStop ? (Date.now() - W.lastStop) / 1000 : 0;
+    for (const ln of tx.replace(/([。？！?])(?=.)/g, '$1\n').split('\n')) { const one = ln.trim(); if (one && !META_RE.test(one)) handleSegment(one, lat, lat, 0); }
+    return;
+  }
+  if (t === 'conversation.item.input_audio_transcription.failed') { setStatus('リアルタイム: 文字起こしに失敗（' + ((m.error && m.error.message) || '') + '）'); rtPartial(''); return; }
+  if (t === 'input_audio_buffer.speech_started') { rtPartial('…'); return; }
+  if (t === 'input_audio_buffer.speech_stopped') { W.lastStop = Date.now(); return; }
+}
+
 /* Google Cloud Speech-to-Text v1（同期 recognize・60秒まで）。LLM ではないので無音に文を作らず、作業メモも書かない。
    この API は API キーを受け付けない（401 "API keys are not supported"）ので、サービスアカウントの JSON キーで
    JWT を署名（WebCrypto RS256）→ oauth2.googleapis.com/token でアクセストークン（1時間）に替えて Bearer で呼ぶ。
