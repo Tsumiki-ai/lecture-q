@@ -75,6 +75,13 @@ textarea{min-height:90px;resize:vertical}
 .hint{font-size:12px;color:var(--muted);margin:0}
 .notice{font-size:13px;color:var(--muted);padding:10px 12px}
 @media (prefers-reduced-motion: no-preference){ body.flash{animation:flash 1.2s ease-out} @keyframes flash{0%{background:#3a3000}100%{background:var(--bg)}} }
+/* 目立たない表示: 入力レベルのバーを消し、検知時の画面の点滅を止め、黄色の帯を細い下線に落とす */
+body.quiet #meter{display:none}
+body.quiet.flash{animation:none}
+body.quiet .line.q2 .tx,body.quiet .line.q1 .tx{background:transparent;color:var(--fg);padding:0;border-radius:0;border-bottom:2px solid var(--q);font-weight:600}
+body.quiet .line.q1 .tx{border-bottom-style:dotted}
+body.quiet .qitem{color:var(--fg)}
+body.quiet .qitem.weak{color:var(--muted)}
 </style>
 </head>
 <body>
@@ -127,6 +134,7 @@ textarea{min-height:90px;resize:vertical}
       <label>無音と見なす秒数<select id="silence"><option value="0.5">0.5</option><option value="0.6" selected>0.6</option><option value="0.8">0.8</option><option value="1.0">1.0</option></select></label>
       <label><span>疑い（橙）にも回答候補</span><select id="answerWeak"><option value="no" selected>出さない</option><option value="yes">出す</option></select></label>
       <label><span>マイクの音声処理</span><select id="rawMic"><option value="raw" selected>切る（遠くの声向け）</option><option value="auto">端末に任せる</option></select></label>
+      <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
     </div>
     <label>レジュメ（PDF か テキスト。回答の根拠と、用語の聞き取りに使う）
       <input type="file" id="notesFile" accept=".pdf,.txt,.md,text/plain,application/pdf">
@@ -151,12 +159,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -213,7 +222,7 @@ function makeResampler(inRate, outRate){
 }
 // dB目盛（-60dB〜0dB を 0〜120px）。小さい音でも動きが見えるように対数にする
 function px(v){ const db = 20 * Math.log10(Math.max(v, 1e-6)); return Math.max(0, Math.min(120, (db + 60) / 60 * 120)); }
-function setMeter(rms, thr, sp){ $('meterBar').style.width = px(rms) + 'px'; $('meterBar').style.background = sp ? 'var(--ok)' : '#2e7d32'; $('meterThr').style.left = Math.min(118, px(thr)) + 'px'; }
+function setMeter(rms, thr, sp){ if (cfg.quiet === 'yes') return; $('meterBar').style.width = px(rms) + 'px'; $('meterBar').style.background = sp ? 'var(--ok)' : '#2e7d32'; $('meterThr').style.left = Math.min(118, px(thr)) + 'px'; }
 function onBlock(blk){
   let s = 0; for (let i = 0; i < blk.length; i++) s += blk[i] * blk[i]; const rms = Math.sqrt(s / blk.length) + 1e-9;
   if (rms < A.noise * 1.5) A.noise = 0.95 * A.noise + 0.05 * rms;
@@ -434,7 +443,7 @@ function setStatus(s){ $('status').textContent = s; }
 function openSettings(){ cfgToForm(); $('dlg').showModal(); }
 $('btnSettings').addEventListener('click', openSettings);
 $('btnCloseSettings').addEventListener('click', () => $('dlg').close());
-$('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
+$('settingsForm').addEventListener('submit', (e) => { e.preventDefault(); formToCfg(); saveCfg(); applyQuiet(); A.vocab = buildVocab(cfg.notes); $('dlg').close(); setStatus('設定を保存した' + (A.vocab ? '（用語 ' + A.vocab.split('、').length + ' 語を聞き取りに反映）' : '')); });
 $('notes').addEventListener('input', () => { cfg.notesName = ''; updateNotesInfo(); });
 $('notesFile').addEventListener('change', async (e) => {
   const f = e.target.files && e.target.files[0]; if (!f) return; setStatus('レジュメを読み込み中…');
@@ -454,7 +463,7 @@ $('notesFile').addEventListener('change', async (e) => {
 $('btnStart').addEventListener('click', startClick);
 document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && A.running && !A.wake) { try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {} } });
 
-loadCfg(); cfgToForm();
+loadCfg(); applyQuiet(); cfgToForm();
 if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
 </script>
