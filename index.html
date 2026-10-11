@@ -94,7 +94,7 @@ body.quiet .qitem.weak{color:var(--muted)}
 <main>
   <section class="pane" aria-label="文字起こし">
     <h2>文字起こし</h2>
-    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば質問として回答候補を出せる。</p></div>
+    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば質問として回答候補を出せる。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。</p></div>
   </section>
   <section id="side">
     <div class="pane" aria-label="検知した質問">
@@ -111,6 +111,7 @@ body.quiet .qitem.weak{color:var(--muted)}
   <button id="btnClear">クリア</button>
   <button id="btnSave">ログ保存</button>
   <button id="btnCopy">ログをコピー</button>
+  <button id="btnRec" hidden>録音を保存</button>
   <span class="spacer"></span>
   <span id="count">質問 0 件</span>
   <button id="btnSettings" aria-label="設定">⚙ 設定</button>
@@ -135,6 +136,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label><span>疑い（橙）にも回答候補</span><select id="answerWeak"><option value="no" selected>出さない</option><option value="yes">出す</option></select></label>
       <label><span>マイクの音声処理</span><select id="rawMic"><option value="raw" selected>切る（遠くの声向け）</option><option value="auto">端末に任せる</option></select></label>
       <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
+      <label><span>録音も残す（先生の許可がある時だけ）</span><select id="rec"><option value="no" selected>残さない</option><option value="yes">残す（停止後に「録音を保存」で書き出す）</option></select></label>
     </div>
     <label>レジュメ（PDF か テキスト。回答の根拠と、用語の聞き取りに使う）
       <input type="file" id="notesFile" accept=".pdf,.txt,.md,text/plain,application/pdf">
@@ -159,13 +161,13 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', llm:'claude', silence:'0.6', answerWeak:'no', rawMic:'raw', quiet:'no', rec:'no', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','llm','silence','answerWeak','rawMic','quiet','rec','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -210,7 +212,7 @@ function detectQuestion(text){
 /* ---------------- 音声 ---------------- */
 const A = { running:false, ctx:null, stream:null, proc:null, src:null, gain:null, resample:null, pending:new Float32Array(0), wake:null,
   noise:0.004, buf:[], preroll:[], speechBlocks:0, trailing:0, collecting:false, chunkQ:[], busy:false, recent:[], qid:0, lastSent:['',0], nq:0, lines:[], vocab:'',
-  cbCount:0, rawPeak:0, loud:0.002, agc:1, diagTimer:null, lastSeg:'' };
+  cbCount:0, rawPeak:0, loud:0.002, agc:1, diagTimer:null, lastSeg:'', lastCb:0, lastMicRetry:0, micRetries:0, recovering:false };
 function makeResampler(inRate, outRate){
   const ratio = inRate / outRate; const win = Math.max(1, Math.round(ratio)); let carry = new Float32Array(0); let pos = 0;
   return (input) => {
@@ -236,7 +238,7 @@ function onBlock(blk){
   }
 }
 function onAudio(input){
-  A.cbCount++;
+  A.cbCount++; A.lastCb = Date.now(); A.micRetries = 0;
   const y = A.resample(input);
   // 自動ゲイン: 処理オフのマイクは音が小さいので、声の大きさを推定して 0.06 付近に正規化（1〜60倍）
   let s = 0; for (let i = 0; i < y.length; i++) s += y[i] * y[i]; const rms = Math.sqrt(s / Math.max(1, y.length)) + 1e-9;
@@ -257,51 +259,102 @@ function startClick(){
 async function start(){
   formToCfg(); saveCfg();
   if (!cfg.gkey) { setStatus('Geminiのキーが無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
-  try {
-    const raw = cfg.rawMic !== 'auto';
-    const constraints = { audio: raw ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false } : true };
-    A.stream = await navigator.mediaDevices.getUserMedia(constraints);
-  } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
+  try { A.stream = await navigator.mediaDevices.getUserMedia(micConstraints()); } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
   if (A.ctx.state !== 'running') { try { await A.ctx.resume(); } catch (e) {} }
   A.resample = makeResampler(A.ctx.sampleRate, SR);
-  A.cbCount = 0; A.rawPeak = 0; A.loud = 0.002; A.agc = 1;
-  A.src = A.ctx.createMediaStreamSource(A.stream);
-  A.proc = A.ctx.createScriptProcessor(4096, 1, 1);
-  A.gain = A.ctx.createGain(); A.gain.gain.value = 0;    // 音は鳴らさない（Safariは出力に繋がないと処理が走らない）
-  A.proc.onaudioprocess = (ev) => { if (A.running) onAudio(ev.inputBuffer.getChannelData(0)); };
-  A.src.connect(A.proc); A.proc.connect(A.gain); A.gain.connect(A.ctx.destination);
+  A.cbCount = 0; A.rawPeak = 0; A.loud = 0.002; A.agc = 1; A.lastCb = Date.now(); A.lastMicRetry = 0; A.micRetries = 0; A.recovering = false;
+  A.ctx.onstatechange = ctxStateChanged;
+  wireAudio();
   A.vocab = buildVocab(cfg.notes);
   A.running = true;
+  recStart();
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
   $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? cfg.asrModel : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
   setStatus('聞き取り中（' + cfg.asrModel + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
-  try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {}
-  // 3秒ごとに入力の生存確認。コールバックが来ていなければ原因を状態欄に出す
+  holdWake();
+  // 3秒ごとに入力の生存確認。コールバックが来ていなければ復帰処理（AudioContext再開→マイク取り直し）。wake lock も切れていれば取り直す
   clearInterval(A.diagTimer); let lastCount = 0;
   A.diagTimer = setInterval(() => {
     if (!A.running) return;
     const got = A.cbCount - lastCount; lastCount = A.cbCount;
     const tr = A.stream && A.stream.getAudioTracks()[0];
+    holdWake();
     if (got === 0) {
-      const st = A.ctx ? A.ctx.state : 'none';
-      setStatus(st !== 'running' ? '音声が止まっている（AudioContext: ' + st + '）。画面を一度タップ' : (tr && tr.muted) ? 'マイクが無音（別アプリが使用中か、消音）' : 'マイクから音が来ていない（Safariの設定でマイクを確認）');
-      if (A.ctx && A.ctx.state !== 'running') { try { A.ctx.resume(); } catch (e) {} }
+      if (!A.recovering) recover(A.ctx && A.ctx.state !== 'running' ? 'AudioContext ' + A.ctx.state : (tr && tr.muted) ? 'マイクが無音' : '音が来ない');
     } else if (!A.lastSeg || Date.now() - A.lastSegAt > 8000) {
       setStatus('聞き取り中 ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz・入力レベル ' + (20 * Math.log10(Math.max(A.rawPeak, 1e-6))).toFixed(0) + 'dB・自動ゲイン x' + A.agc.toFixed(0) + (tr && tr.getSettings ? '・' + JSON.stringify({ns: tr.getSettings().noiseSuppression, agc: tr.getSettings().autoGainControl}) : ''));
       A.rawPeak = 0;
     }
   }, 3000);
 }
-// 画面のどこかをタップしたら AudioContext を起こす（iOSの保険）
-document.addEventListener('touchend', () => { if (A.running && A.ctx && A.ctx.state !== 'running') { try { A.ctx.resume(); } catch (e) {} } }, { passive: true });
-document.addEventListener('click', () => { if (A.running && A.ctx && A.ctx.state !== 'running') { try { A.ctx.resume(); } catch (e) {} } });
-function stop(){
-  A.running = false; clearInterval(A.diagTimer);
+/* ---------------- スリープ・中断からの復帰 ----------------
+   iPadがスリープ／自動ロック／別アプリの音で中断すると、AudioContext が interrupted/suspended になり、
+   マイクのトラックが muted か ended になって onaudioprocess が来なくなる。
+   復帰の順序: AudioContext.resume → 1.5秒待ってコールバックが戻るか見る → 戻らなければ getUserMedia をやり直して配線し直す。
+   録音中なら新しいストリームで MediaRecorder も作り直す（断片は別セッションとして積まれ、保存時に連結される）。 */
+function micConstraints(){ const raw = cfg.rawMic !== 'auto'; return { audio: raw ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false } : true }; }
+function wireAudio(){
   try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
-  try { A.stream && A.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
-  try { A.ctx && A.ctx.close(); } catch (e) {}
+  A.src = A.ctx.createMediaStreamSource(A.stream);
+  A.proc = A.ctx.createScriptProcessor(4096, 1, 1);
+  A.gain = A.ctx.createGain(); A.gain.gain.value = 0;    // 音は鳴らさない（Safariは出力に繋がないと処理が走らない）
+  A.proc.onaudioprocess = (ev) => { if (A.running) onAudio(ev.inputBuffer.getChannelData(0)); };
+  A.src.connect(A.proc); A.proc.connect(A.gain); A.gain.connect(A.ctx.destination);
+  const tr = A.stream.getAudioTracks()[0];
+  if (tr) { tr.onended = () => recover('マイクが切れた'); tr.onunmute = () => recover('マイク復帰'); }
+}
+async function ensureMic(){
+  const s = await navigator.mediaDevices.getUserMedia(micConstraints());
+  try { A.stream && A.stream.getTracks().forEach(t => { t.onended = null; t.onunmute = null; t.stop(); }); } catch (e) {}
+  A.stream = s; A.pending = new Float32Array(0); A.buf = []; A.collecting = false;
+  wireAudio();
+  if (cfg.rec === 'yes') { recStop(); recStart(); }
+}
+const waitMs = (ms) => new Promise(r => setTimeout(r, ms));
+async function recover(why){
+  if (!A.running || A.recovering || !A.ctx) return; A.recovering = true;
+  try {
+    if (A.ctx.state === 'closed') { setStatus('音声が止まった。画面を一度タップすると再開'); return; }
+    const wasStopped = A.ctx.state !== 'running';
+    if (wasStopped) { try { await A.ctx.resume(); } catch (e) {} }
+    if (A.ctx.state !== 'running') { setStatus('音声が止まっている（' + A.ctx.state + '）。画面を一度タップ'); return; }
+    if (wasStopped) await waitMs(1500);
+    const tr = A.stream && A.stream.getAudioTracks()[0];
+    const dead = !tr || tr.readyState === 'ended';
+    const stale = Date.now() - A.lastCb > 2500;
+    if (!dead && !stale) { if (wasStopped) setStatus('復帰した（' + why + '）'); return; }
+    if (A.micRetries >= 3) { setStatus('マイクが戻らない。停止→開始をやり直す'); return; }
+    if (Date.now() - A.lastMicRetry < 8000) return;    // 取り直しの連打を避ける
+    A.lastMicRetry = Date.now(); A.micRetries++;
+    await ensureMic();
+    setStatus('マイクを取り直して再開（' + why + '）');
+  } catch (e) { setStatus('復帰に失敗: ' + (e.name || e.message) + '。停止→開始をやり直す'); }
+  finally { A.recovering = false; }
+}
+function ctxStateChanged(){ if (A.running && A.ctx && A.ctx.state !== 'running') setTimeout(() => recover('AudioContext ' + (A.ctx ? A.ctx.state : '')), 500); }
+// 画面の自動ロックを止める。スリープや裏に回ると解放されるので、戻るたび・3秒ごとに取り直す
+async function holdWake(){
+  if (!A.running || !navigator.wakeLock) return;
+  if (A.wake && !A.wake.released) return;
+  try { A.wake = await navigator.wakeLock.request('screen'); A.wake.addEventListener('release', () => { if (A.wake && A.wake.released) A.wake = null; }); } catch (e) { A.wake = null; }
+}
+// 画面のどこかをタップしたら復帰を試す（iOSは AudioContext の再開がユーザー操作の中でしか効かないことがある）
+function tapRecover(){
+  if (!A.running) return;
+  if (A.ctx && A.ctx.state === 'closed') {    // 閉じられていた時だけ、ユーザー操作の中で作り直す
+    try { A.ctx = new (window.AudioContext || window.webkitAudioContext)(); A.ctx.resume(); A.resample = makeResampler(A.ctx.sampleRate, SR); A.ctx.onstatechange = ctxStateChanged; wireAudio(); } catch (e) {}
+  }
+  recover('タップ');
+}
+document.addEventListener('touchend', tapRecover, { passive: true });
+document.addEventListener('click', tapRecover);
+function stop(){
+  A.running = false; clearInterval(A.diagTimer); recStop(); saveLog();
+  try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
+  try { A.stream && A.stream.getTracks().forEach(t => { t.onended = null; t.onunmute = null; t.stop(); }); } catch (e) {}
+  try { if (A.ctx) A.ctx.onstatechange = null; A.ctx && A.ctx.close(); } catch (e) {}
   try { A.wake && A.wake.release(); } catch (e) {}
-  A.wake = null; A.pending = new Float32Array(0); A.buf = []; A.collecting = false;
+  A.wake = null; A.recovering = false; A.pending = new Float32Array(0); A.buf = []; A.collecting = false;
   $('btnStart').textContent = '開始'; $('btnStart').className = 'primary'; setStatus('停止中');
 }
 
@@ -365,7 +418,7 @@ function handleSegment(tx, lat, proc, sec){
   if (cfg.llm !== 'off' && lv >= minLevel && !(tx === A.lastSent[0] && Date.now() - A.lastSent[1] < 10000)) {
     qid = ++A.qid; A.lastSent = [tx, Date.now()]; const ctx = A.recent.slice(0, -1).slice(-10).join('\n'); askAnswer(qid, tx, ctx);
   }
-  A.lines.push({ kind:'seg', t: now, text: tx, level: lv });
+  A.lines.push({ kind:'seg', t: now, text: tx, level: lv }); scheduleLogSave();
   const tr = $('transcript'); const notice = tr.querySelector('.notice'); if (notice) notice.remove();
   const p = document.createElement('p'); p.className = 'line' + (lv === 2 ? ' q2' : lv === 1 ? ' q1' : '');
   p.dataset.text = tx; p.dataset.ts = ts;
@@ -395,10 +448,85 @@ function manualAsk(p){
   const q = document.createElement('p'); q.className = 'qitem'; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
   A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
   const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
-  A.lines.push({ kind:'manual', t:new Date(), text: tx });
+  A.lines.push({ kind:'manual', t:new Date(), text: tx }); scheduleLogSave();
   askAnswer(qid, tx, ctx);
 }
 $('transcript').addEventListener('click', (e) => { const p = e.target.closest('.line'); if (p) manualAsk(p); });
+
+/* ---------------- ログの自動保存と復元 ----------------
+   Safariはメモリ不足やタブの入れ替えでページを読み直すことがあり、画面のログが丸ごと消える。
+   1文ごとに localStorage に書き、次に開いた時に戻す。 */
+const LOG_KEY = 'lq_log_v1';
+let logTimer = null;
+function scheduleLogSave(){ clearTimeout(logTimer); logTimer = setTimeout(saveLog, 1500); }
+function saveLog(){
+  clearTimeout(logTimer);
+  try { localStorage.setItem(LOG_KEY, JSON.stringify({ at: Date.now(), nq: A.nq, lines: A.lines.map(l => l.t instanceof Date ? Object.assign({}, l, { t: l.t.getTime() }) : l) })); }
+  catch (e) { setStatus('ログの自動保存に失敗（容量か設定）。「ログ保存」で書き出す'); }
+}
+function restoreLog(){
+  let j = null; try { j = JSON.parse(localStorage.getItem(LOG_KEY) || 'null'); } catch (e) {}
+  if (!j || !j.lines || !j.lines.length) return;
+  const tr = $('transcript'); const notice = tr.querySelector('.notice'); if (notice) notice.remove();
+  const head = document.createElement('p'); head.className = 'notice'; head.textContent = '前回のログを復元（' + j.lines.length + ' 件・' + new Date(j.at).toLocaleString('ja-JP') + ' まで）。続けるなら開始、消すならクリア'; tr.appendChild(head);
+  let lastQ = '';
+  for (const l of j.lines) {
+    if (l.kind === 'seg') {
+      const d = new Date(l.t || j.at); const ts = hhmmss(d); const lv = l.level || 0;
+      A.lines.push({ kind:'seg', t: d, text: l.text, level: lv }); A.recent.push('[' + ts + '] ' + l.text); if (A.recent.length > 14) A.recent.shift();
+      const p = document.createElement('p'); p.className = 'line' + (lv === 2 ? ' q2' : lv === 1 ? ' q1' : ''); p.dataset.text = l.text; p.dataset.ts = ts;
+      p.innerHTML = '<span class="ts">' + ts + '</span><span class="tx"></span>'; p.querySelector('.tx').textContent = (lv === 2 ? '❓ ' : lv === 1 ? '? ' : '') + l.text; tr.appendChild(p);
+      if (lv) { A.nq++; const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = l.text; $('qlog').appendChild(q); lastQ = l.text; }
+    } else if (l.kind === 'manual') {
+      const d = new Date(l.t || j.at); A.lines.push({ kind:'manual', t: d, text: l.text }); A.nq++;
+      const q = document.createElement('p'); q.className = 'qitem'; q.innerHTML = '<span class="ts">' + hhmmss(d) + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + l.text; $('qlog').appendChild(q); lastQ = l.text;
+    } else if (l.kind === 'answer') {
+      A.lines.push({ kind:'answer', q: l.q, answer: l.answer, sec: l.sec });
+      const box = document.createElement('div'); box.className = 'ans'; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + (l.q || lastQ) + '　（' + l.sec + '秒）';
+      for (const ln of String(l.answer || '').split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え')) p.className = 'a'; else if (ln.startsWith('[失敗')) p.className = 'err'; p.textContent = ln; box.appendChild(p); }
+      $('alog').appendChild(box);
+    }
+  }
+  $('count').textContent = '質問 ' + A.nq + ' 件'; tr.scrollTop = tr.scrollHeight; $('qlog').scrollTop = $('qlog').scrollHeight; $('alog').scrollTop = $('alog').scrollHeight;
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveLog(); });
+window.addEventListener('pagehide', saveLog);
+
+/* ---------------- 録音（任意・先生の許可が前提） ----------------
+   聞き取りに使っている同じマイク入力を MediaRecorder で30秒ごとに切り、IndexedDB に積む。
+   ページが読み直されても断片は残るので、停止後（または次に開いた時）に「録音を保存」で1本に繋いで書き出す。 */
+const R = { rec:null, sess:0, n:0, db:null, mime:'' };
+function recDb(){ return new Promise((res, rej) => { if (R.db) return res(R.db); if (!window.indexedDB) return rej(new Error('IndexedDBが無い')); const q = indexedDB.open('lq_rec', 1); q.onupgradeneeded = () => { q.result.createObjectStore('chunks', { keyPath:'id', autoIncrement:true }); }; q.onsuccess = () => { R.db = q.result; res(R.db); }; q.onerror = () => rej(q.error); }); }
+function recTx(mode, fn){ return recDb().then(db => new Promise((res, rej) => { const tx = db.transaction('chunks', mode); const rq = fn(tx.objectStore('chunks')); tx.oncomplete = () => res(rq && rq.result); tx.onerror = () => rej(tx.error); })); }
+function recPut(obj){ return recTx('readwrite', st => st.put(obj)); }
+function recAll(){ return recTx('readonly', st => st.getAll()); }
+function recClear(){ return recTx('readwrite', st => st.clear()); }
+function recStart(){
+  if (cfg.rec !== 'yes') return;
+  if (!window.MediaRecorder) { setStatus('このブラウザは録音に対応していない（聞き取りは続ける）'); return; }
+  const mimes = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']; R.mime = mimes.find(m => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || '';
+  try { R.rec = new MediaRecorder(A.stream, Object.assign({ audioBitsPerSecond: 64000 }, R.mime ? { mimeType: R.mime } : {})); }
+  catch (e) { setStatus('録音を開始できない: ' + e.message + '（聞き取りは続ける）'); R.rec = null; return; }
+  R.sess = Date.now(); R.n = 0;
+  R.rec.ondataavailable = (ev) => { if (!ev.data || !ev.data.size) return; R.n++; recPut({ sess: R.sess, i: R.n, t: Date.now(), type: ev.data.type || R.mime, blob: ev.data }).then(() => { $('btnRec').hidden = false; }).catch(e => setStatus('録音の断片を保存できない: ' + (e && e.message))); };
+  R.rec.onerror = (ev) => setStatus('録音エラー: ' + (ev.error && ev.error.message || ''));
+  try { R.rec.start(30000); } catch (e) { setStatus('録音を開始できない: ' + e.message); R.rec = null; }
+}
+function recStop(){ try { if (R.rec && R.rec.state !== 'inactive') R.rec.stop(); } catch (e) {} R.rec = null; }
+async function recSave(){
+  let all = [];
+  try { all = (await recAll()) || []; } catch (e) { setStatus('録音を読めない: ' + e.message); return; }
+  if (!all.length) { setStatus('保存できる録音がない'); $('btnRec').hidden = true; return; }
+  all.sort((a, b) => (a.sess - b.sess) || (a.i - b.i));
+  const type = all[0].type || 'audio/mp4'; const ext = /mp4/.test(type) ? 'm4a' : /webm/.test(type) ? 'webm' : 'bin';
+  const blob = new Blob(all.map(c => c.blob), { type });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_rec_' + new Date(all[0].sess).toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.' + ext; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+  const sessions = new Set(all.map(c => c.sess)).size;
+  setStatus('録音を書き出した（' + (blob.size / 1048576).toFixed(1) + ' MB・' + all.length + ' 片' + (sessions > 1 ? '・' + sessions + ' 回分を連結' : '') + '）。端末に保存できたら「クリア」で消す');
+}
+async function recCheck(){ try { const all = await recAll(); if (all && all.length) { $('btnRec').hidden = false; if (!A.running) setStatus('前の録音が残っている（' + all.length + ' 片）。「録音を保存」で書き出すか、「クリア」で消す'); } } catch (e) {} }
+$('btnRec').addEventListener('click', recSave);
 
 /* ---------------- 回答候補 ---------------- */
 const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n全体で6行以内・150字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
@@ -428,7 +556,7 @@ async function askAnswer(qid, q, ctx){
   } catch (e) { err = e.message; }
   const sec = ((Date.now() - t0) / 1000).toFixed(1);
   const box = $('ans' + qid); if (!box) return; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + q + '　（' + sec + '秒）';
-  A.lines.push({ kind:'answer', q, answer: err ? '[失敗: ' + err + ']' : text, sec });
+  A.lines.push({ kind:'answer', q, answer: err ? '[失敗: ' + err + ']' : text, sec }); scheduleLogSave();
   if (err) { const p = document.createElement('p'); p.className = 'err'; p.textContent = '回答生成に失敗: ' + err; box.appendChild(p); }
   else for (const ln of text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え')) p.className = 'a'; p.textContent = ln; box.appendChild(p); }
   $('alog').scrollTop = $('alog').scrollHeight;
@@ -439,7 +567,7 @@ function hhmmss(d){ return d.toTimeString().slice(0, 8); }
 function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : l.kind === 'manual' ? ('    [手動で質問] ' + l.text) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
 $('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_log_' + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
 $('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
-$('btnClear').addEventListener('click', () => { $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; A.lines = []; A.nq = 0; $('count').textContent = '質問 0 件'; });
+$('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
 
 /* ---------------- 設定UI ---------------- */
 function setStatus(s){ $('status').textContent = s; }
@@ -464,9 +592,11 @@ $('notesFile').addEventListener('change', async (e) => {
   } catch (err) { setStatus('レジュメを読めなかった: ' + err.message + '。本文を貼り付けで入れる'); }
 });
 $('btnStart').addEventListener('click', startClick);
-document.addEventListener('visibilitychange', async () => { if (document.visibilityState === 'visible' && A.running && !A.wake) { try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {} } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && A.running) { holdWake(); recover('スリープから復帰'); } });
+window.addEventListener('pageshow', () => { if (A.running) { holdWake(); recover('ページ復帰'); } });
+window.addEventListener('focus', () => { if (A.running) recover('フォーカス'); });
 
-loadCfg(); applyQuiet(); cfgToForm();
+loadCfg(); applyQuiet(); cfgToForm(); restoreLog(); recCheck();
 if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
 </script>
