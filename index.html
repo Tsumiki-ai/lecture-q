@@ -127,7 +127,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label>文字起こしモデル<select id="asrModel"><option value="gemini-3.5-flash">gemini-3.5-flash（既定）</option><option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite（速い）</option><option value="gemini-3.8-flash">gemini-3.8-flash</option></select></label>
     </div>
     <div class="row">
-      <label>回答候補の提供元<select id="llm"><option value="claude">Claude Haiku</option><option value="gemini">Gemini Flash</option><option value="off">出さない（検知だけ）</option></select></label>
+      <label>回答候補の提供元<select id="llm"><option value="claude">Claude Haiku（最速）</option><option value="sonnet">Claude Sonnet（0.5〜1秒遅いが賢い）</option><option value="gemini">Gemini Flash</option><option value="off">出さない（検知だけ）</option></select></label>
       <label>Anthropic APIキー（Claudeを使う時）<input type="password" id="akey" autocomplete="off" placeholder="sk-ant-..."></label>
     </div>
     <div class="row">
@@ -273,7 +273,7 @@ async function start(){
   A.vocab = buildVocab(cfg.notes);
   A.running = true;
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
-  $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? cfg.asrModel : 'claude-haiku-5-5') + (cfg.notes ? '・レジュメ有' : '') + '）');
+  $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? cfg.asrModel : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
   setStatus('聞き取り中（' + cfg.asrModel + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
   try { A.wake = await navigator.wakeLock.request('screen'); } catch (e) {}
   // 3秒ごとに入力の生存確認。コールバックが来ていなければ原因を状態欄に出す
@@ -402,6 +402,9 @@ $('transcript').addEventListener('click', (e) => { const p = e.target.closest('.
 
 /* ---------------- 回答候補 ---------------- */
 const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n全体で6行以内・150字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
+// Claudeのモデルと思考オフの指定はモデルごとに違う（Haiku=disabled・Sonnet=between_tools。Opus/Fableはadaptiveしか無く3.5秒以上かかるので載せない）
+function claudeModel(){ return cfg.llm === 'sonnet' ? 'claude-sonnet-5-5' : 'claude-haiku-5-5'; }
+function claudeThinking(){ return cfg.llm === 'sonnet' ? { type:'between_tools' } : { type:'disabled' }; }
 async function askAnswer(qid, q, ctx){
   const user = '【直前の講義の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n【検知した発言（これについて判定と回答案）】\n' + q;
   const t0 = Date.now(); let text = '', err = '';
@@ -413,7 +416,7 @@ async function askAnswer(qid, q, ctx){
     } else {
       if (!cfg.akey) throw new Error('Anthropicのキーが無い（設定）');
       const system = [{ type:'text', text: ROLE(cfg.course) }]; if (cfg.notes) system.push({ type:'text', text:'【配付資料（レジュメ）】\n' + cfg.notes, cache_control:{ type:'ephemeral' } });
-      let body = { model:'claude-haiku-5-5', max_tokens:400, system, messages:[{ role:'user', content: user }], thinking:{ type:'disabled' } };
+      let body = { model: claudeModel(), max_tokens:400, system, messages:[{ role:'user', content: user }], thinking: claudeThinking() };
       for (let attempt = 0; attempt < 3; attempt++) {
         const r = await fetch(ANTHROPIC_URL, { method:'POST', headers:{ 'content-type':'application/json', 'x-api-key': cfg.akey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify(body) });
         if (!r.ok) { const et = await r.text(); if (r.status === 400 && body.thinking) { delete body.thinking; body.max_tokens = 1500; continue; } throw new Error('Claude HTTP ' + r.status + ' ' + et.slice(0, 160)); }
