@@ -464,7 +464,7 @@ async function pumpASR(){
   } finally { A.busy = false; }
 }
 function handleSegment(tx, lat, proc, sec){
-  const [lv, why] = detectQuestion(tx); const now = new Date(); const ts = hhmmss(now);
+  const [lv, why] = /^\[/.test(tx) ? [0, ''] : detectQuestion(tx); const now = new Date(); const ts = hhmmss(now);
   A.recent.push('[' + ts + '] ' + tx); if (A.recent.length > 14) A.recent.shift();
   let qid = null; const minLevel = cfg.answerWeak === 'yes' ? 1 : 2;
   if (cfg.llm !== 'off' && lv >= minLevel && !(tx === A.lastSent[0] && Date.now() - A.lastSent[1] < 10000)) {
