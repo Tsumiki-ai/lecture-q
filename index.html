@@ -95,7 +95,7 @@ body.quiet .qitem.weak{color:var(--muted)}
 <main>
   <section class="pane" aria-label="文字起こし">
     <h2>文字起こし</h2>
-    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば質問として回答候補を出せる。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。</p></div>
+    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば必ず質問として答える。出た答えが違うときは、その回答候補をタップすると「別の答え」を出す。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。</p></div>
   </section>
   <section id="side">
     <div class="pane" aria-label="検知した質問">
@@ -516,7 +516,7 @@ function handleSegment(tx, lat, proc, sec){
    文字起こしの行・「検知した質問」の項目・回答候補の箱（判定が「質問ではない」か失敗のもの）のどれをタップしても、
    その文を質問として強制的に答えさせる。判定は飛ばし、短い発言でも直前の文脈から問いを推定して答える。 */
 function manualAsk(p){ const tx = p.dataset.text; if (!tx) return; p.classList.add('manual'); forceAsk(tx, p.dataset.ts || hhmmss(new Date())); }
-function forceAsk(tx, ts){
+function forceAsk(tx, ts, alt){
   if (cfg.llm === 'off') { setStatus('回答候補がオフ。設定で提供元を選ぶ'); return; }
   const qid = ++A.qid;
   // 文脈はその文より前の直近10文
@@ -525,16 +525,18 @@ function forceAsk(tx, ts){
   const ctx = before.slice(-24).join('\n') + (qs ? '\n\n【少し前に検知した質問（古い→新しい）。指名された文はこの流れの続き】\n' + qs : '');
   const q = document.createElement('p'); q.className = 'qitem'; q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
   A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
-  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: 👆 ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
+  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = (alt ? 'Q: 👆 別の答え: ' : 'Q: 👆 ') + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
   A.lines.push({ kind:'manual', t:new Date(), text: tx }); scheduleLogSave();
-  askAnswer(qid, tx, ctx, true);
+  askAnswer(qid, tx, ctx, true, alt);
 }
 $('transcript').addEventListener('click', (e) => { const p = e.target.closest('.line'); if (p) manualAsk(p); });
 $('qlog').addEventListener('click', (e) => { const p = e.target.closest('.qitem'); if (p && p.dataset.text) forceAsk(p.dataset.text, p.dataset.ts || hhmmss(new Date())); });
 $('alog').addEventListener('click', (e) => {
   const b = e.target.closest('.ans'); if (!b || !b.dataset.text || b.querySelector('.thinking')) return;
   const judged = Array.from(b.querySelectorAll('.judge')).some(p => /質問ではない/.test(p.textContent)); const failed = !!b.querySelector('.err');
-  if (judged || failed) forceAsk(b.dataset.text, b.dataset.ts || hhmmss(new Date()));
+  if (judged || failed) { forceAsk(b.dataset.text, b.dataset.ts || hhmmss(new Date())); return; }
+  const prev = Array.from(b.querySelectorAll('.a')).map(p => p.textContent).join('\n');
+  if (prev) forceAsk(b.dataset.text, b.dataset.ts || hhmmss(new Date()), prev);
 });
 
 /* ---------------- ログの自動保存と復元 ----------------
@@ -567,7 +569,7 @@ function restoreLog(){
     } else if (l.kind === 'answer') {
       A.lines.push({ kind:'answer', q: l.q, answer: l.answer, sec: l.sec });
       const box = document.createElement('div'); box.className = 'ans'; box.dataset.text = l.q || lastQ; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + (l.q || lastQ) + '　（' + l.sec + '秒）';
-      for (const ln of String(l.answer || '').split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え')) p.className = 'a'; else if (ln.startsWith('[失敗')) p.className = 'err'; p.textContent = ln; box.appendChild(p); }
+      for (const ln of String(l.answer || '').split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え') || ln.startsWith('別解')) p.className = 'a'; else if (ln.startsWith('[失敗')) p.className = 'err'; p.textContent = ln; box.appendChild(p); }
       $('alog').appendChild(box);
     }
   }
@@ -618,16 +620,17 @@ async function recCheck(){ try { const all = await recAll(); if (all && all.leng
 $('btnRec').addEventListener('click', recSave);
 
 /* ---------------- 回答候補 ---------------- */
-const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n全体で6行以内・150字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
+const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n別解: 答えの候補が複数あるときだけ、もう1つの有力候補を1文（無ければ省く）\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n答えは一般論（注意する、顧客を増やす、ルールを守る等）ではなく、配付資料・教科書・制度史・実務で実際に採られてきた定番の具体策を名指しする。配付資料に該当する記述があればそれを最優先にする。\n全体で7行以内・170字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
 // Claudeのモデルと思考オフの指定はモデルごとに違う（Haiku=disabled・Sonnet=between_tools。Opus/Fableはadaptiveしか無く3.5秒以上かかるので載せない）
 function geminiModel(){ return /^gemini/.test(cfg.asrModel) ? cfg.asrModel : 'gemini-3.5-flash'; }
 function claudeModel(){ return cfg.llm === 'sonnet' ? 'claude-sonnet-5-5' : 'claude-haiku-5-5'; }
 function claudeThinking(){ return cfg.llm === 'sonnet' ? { type:'between_tools' } : { type:'disabled' }; }
-async function askAnswer(qid, q, ctx, force){
+async function askAnswer(qid, q, ctx, force, alt){
   const head = '【直前の講義の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n';
   const user = head + (force
     ? '【学生がタップして指名した発言（必ず答える）】\n' + q + '\n\n学生がこの発言を自分で選んで回答を求めている。質問かどうかの判定はしない。1行目は必ず「判定: 質問（指名）」と書き、2行目から答え・補足・根拠を必ず書く。指名された文は、ほとんどの場合、先生が学生に投げた問い（例:「どうしたらいいですか？」「なに？」）。答えるのは「学生が今何をすべきか」や授業の進め方ではなく、その問いの中身、つまり先生が学生に言わせたい答え。直前の文字起こしと検知した質問の流れから、先生が示した状況・制約・ダメ出し（例: ○○は通らない）を前提に、問いを1文で具体化してから答える。問いの推定は補足の冒頭に「問いの推定: …」と1行で示す。誤変換が多くても、文脈から最も筋の通る解釈を1つ選んで答え、「分からない」「資料を参照」では終わらない。'
-    : '【検知した発言（これについて判定と回答案）】\n' + q);
+    : '【検知した発言（これについて判定と回答案）】\n' + q)
+    + (alt ? '\n\n【前回の答え（先生の求める答えではなかった）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。それ以外で、教科書・制度史・実務の定番の具体策を「答え」と「別解」に1つずつ書く。' : '');
   const t0 = Date.now(); let text = '', err = '';
   try {
     if (cfg.llm === 'gemini') {
@@ -651,7 +654,7 @@ async function askAnswer(qid, q, ctx, force){
   const box = $('ans' + qid); if (!box) return; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + q + '　（' + sec + '秒）';
   A.lines.push({ kind:'answer', q, answer: err ? '[失敗: ' + err + ']' : text, sec }); scheduleLogSave();
   if (err) { const p = document.createElement('p'); p.className = 'err'; p.textContent = '回答生成に失敗: ' + err; box.appendChild(p); }
-  else for (const ln of text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え')) p.className = 'a'; p.textContent = ln; box.appendChild(p); }
+  else for (const ln of text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え') || ln.startsWith('別解')) p.className = 'a'; p.textContent = ln; box.appendChild(p); }
   $('alog').scrollTop = $('alog').scrollHeight;
 }
 
