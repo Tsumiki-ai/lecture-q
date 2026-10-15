@@ -489,10 +489,10 @@ async function pumpASR(){
 }
 function handleSegment(tx, lat, proc, sec){
   const [lv, why] = /^\[/.test(tx) ? [0, ''] : detectQuestion(tx); const now = new Date(); const ts = hhmmss(now);
-  A.recent.push('[' + ts + '] ' + tx); if (A.recent.length > 14) A.recent.shift();
+  A.recent.push('[' + ts + '] ' + tx); if (A.recent.length > 40) A.recent.shift();
   let qid = null; const minLevel = cfg.answerWeak === 'yes' ? 1 : 2;
   if (cfg.llm !== 'off' && lv >= minLevel && !(tx === A.lastSent[0] && Date.now() - A.lastSent[1] < 10000)) {
-    qid = ++A.qid; A.lastSent = [tx, Date.now()]; const ctx = A.recent.slice(0, -1).slice(-10).join('\n'); askAnswer(qid, tx, ctx);
+    qid = ++A.qid; A.lastSent = [tx, Date.now()]; const ctx = A.recent.slice(0, -1).slice(-24).join('\n'); askAnswer(qid, tx, ctx);
   }
   A.lines.push({ kind:'seg', t: now, text: tx, level: lv }); scheduleLogSave();
   const tr = $('transcript'); const notice = tr.querySelector('.notice'); if (notice) notice.remove();
@@ -521,7 +521,8 @@ function forceAsk(tx, ts){
   const qid = ++A.qid;
   // 文脈はその文より前の直近10文
   const idx = A.recent.findIndex(r => r.endsWith(' ' + tx)); const before = idx >= 0 ? A.recent.slice(0, idx) : A.recent.slice(0, -1);
-  const ctx = before.slice(-10).join('\n');
+  const qs = A.lines.filter(l => ((l.kind === 'seg' && l.level) || l.kind === 'manual') && l.text !== tx).slice(-5).map(l => '[' + (l.t instanceof Date ? hhmmss(l.t) : '') + '] ' + l.text).join('\n');
+  const ctx = before.slice(-24).join('\n') + (qs ? '\n\n【少し前に検知した質問（古い→新しい）。指名された文はこの流れの続き】\n' + qs : '');
   const q = document.createElement('p'); q.className = 'qitem'; q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
   A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
   const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: 👆 ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
@@ -556,7 +557,7 @@ function restoreLog(){
   for (const l of j.lines) {
     if (l.kind === 'seg') {
       const d = new Date(l.t || j.at); const ts = hhmmss(d); const lv = l.level || 0;
-      A.lines.push({ kind:'seg', t: d, text: l.text, level: lv }); A.recent.push('[' + ts + '] ' + l.text); if (A.recent.length > 14) A.recent.shift();
+      A.lines.push({ kind:'seg', t: d, text: l.text, level: lv }); A.recent.push('[' + ts + '] ' + l.text); if (A.recent.length > 40) A.recent.shift();
       const p = document.createElement('p'); p.className = 'line' + (lv === 2 ? ' q2' : lv === 1 ? ' q1' : ''); p.dataset.text = l.text; p.dataset.ts = ts;
       p.innerHTML = '<span class="ts">' + ts + '</span><span class="tx"></span>'; p.querySelector('.tx').textContent = (lv === 2 ? '❓ ' : lv === 1 ? '? ' : '') + l.text; tr.appendChild(p);
       if (lv) { A.nq++; const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.dataset.text = l.text; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = l.text; $('qlog').appendChild(q); lastQ = l.text; }
@@ -625,7 +626,7 @@ function claudeThinking(){ return cfg.llm === 'sonnet' ? { type:'between_tools' 
 async function askAnswer(qid, q, ctx, force){
   const head = '【直前の講義の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n';
   const user = head + (force
-    ? '【学生がタップして指名した発言（必ず答える）】\n' + q + '\n\n学生がこの発言を自分で選んで回答を求めている。質問かどうかの判定はしない。1行目は必ず「判定: 質問（指名）」と書き、2行目から答え・補足・根拠を必ず書く。「なに？」のような短い発言や誤変換の多い発言でも、直前の文字起こしから先生が何を問うているかを推定し、その推定した問いに答える。推定した問いは補足の冒頭に「問いの推定: …」と1行で示す。'
+    ? '【学生がタップして指名した発言（必ず答える）】\n' + q + '\n\n学生がこの発言を自分で選んで回答を求めている。質問かどうかの判定はしない。1行目は必ず「判定: 質問（指名）」と書き、2行目から答え・補足・根拠を必ず書く。指名された文は、ほとんどの場合、先生が学生に投げた問い（例:「どうしたらいいですか？」「なに？」）。答えるのは「学生が今何をすべきか」や授業の進め方ではなく、その問いの中身、つまり先生が学生に言わせたい答え。直前の文字起こしと検知した質問の流れから、先生が示した状況・制約・ダメ出し（例: ○○は通らない）を前提に、問いを1文で具体化してから答える。問いの推定は補足の冒頭に「問いの推定: …」と1行で示す。誤変換が多くても、文脈から最も筋の通る解釈を1つ選んで答え、「分からない」「資料を参照」では終わらない。'
     : '【検知した発言（これについて判定と回答案）】\n' + q);
   const t0 = Date.now(); let text = '', err = '';
   try {
