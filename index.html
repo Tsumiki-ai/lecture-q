@@ -504,30 +504,37 @@ function handleSegment(tx, lat, proc, sec){
   tr.appendChild(p); tr.scrollTop = tr.scrollHeight;
   if (lv) {
     A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
-    const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
+    const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
     if (lv === 2) { document.body.classList.remove('flash'); void document.body.offsetWidth; document.body.classList.add('flash'); }
-    if (qid) { const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight; }
+    if (qid) { const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight; }
   }
   A.lastSeg = tx; A.lastSegAt = Date.now();
   setStatus('遅れ ' + lat.toFixed(1) + '秒（処理 ' + proc.toFixed(1) + '秒／音声 ' + sec.toFixed(1) + '秒）  待ち ' + A.chunkQ.length);
 }
 
-/* ---------------- 手動で質問として送る（文をタップ） ---------------- */
-function manualAsk(p){
-  const tx = p.dataset.text; if (!tx) return;
+/* ---------------- 手動で質問として送る（タップ＝指名） ----------------
+   文字起こしの行・「検知した質問」の項目・回答候補の箱（判定が「質問ではない」か失敗のもの）のどれをタップしても、
+   その文を質問として強制的に答えさせる。判定は飛ばし、短い発言でも直前の文脈から問いを推定して答える。 */
+function manualAsk(p){ const tx = p.dataset.text; if (!tx) return; p.classList.add('manual'); forceAsk(tx, p.dataset.ts || hhmmss(new Date())); }
+function forceAsk(tx, ts){
   if (cfg.llm === 'off') { setStatus('回答候補がオフ。設定で提供元を選ぶ'); return; }
-  const qid = ++A.qid; const ts = p.dataset.ts || hhmmss(new Date());
-  p.classList.add('manual');
+  const qid = ++A.qid;
   // 文脈はその文より前の直近10文
   const idx = A.recent.findIndex(r => r.endsWith(' ' + tx)); const before = idx >= 0 ? A.recent.slice(0, idx) : A.recent.slice(0, -1);
   const ctx = before.slice(-10).join('\n');
-  const q = document.createElement('p'); q.className = 'qitem'; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
+  const q = document.createElement('p'); q.className = 'qitem'; q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
   A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
-  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
+  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: 👆 ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
   A.lines.push({ kind:'manual', t:new Date(), text: tx }); scheduleLogSave();
-  askAnswer(qid, tx, ctx);
+  askAnswer(qid, tx, ctx, true);
 }
 $('transcript').addEventListener('click', (e) => { const p = e.target.closest('.line'); if (p) manualAsk(p); });
+$('qlog').addEventListener('click', (e) => { const p = e.target.closest('.qitem'); if (p && p.dataset.text) forceAsk(p.dataset.text, p.dataset.ts || hhmmss(new Date())); });
+$('alog').addEventListener('click', (e) => {
+  const b = e.target.closest('.ans'); if (!b || !b.dataset.text || b.querySelector('.thinking')) return;
+  const judged = Array.from(b.querySelectorAll('.judge')).some(p => /質問ではない/.test(p.textContent)); const failed = !!b.querySelector('.err');
+  if (judged || failed) forceAsk(b.dataset.text, b.dataset.ts || hhmmss(new Date()));
+});
 
 /* ---------------- ログの自動保存と復元 ----------------
    Safariはメモリ不足やタブの入れ替えでページを読み直すことがあり、画面のログが丸ごと消える。
@@ -552,13 +559,13 @@ function restoreLog(){
       A.lines.push({ kind:'seg', t: d, text: l.text, level: lv }); A.recent.push('[' + ts + '] ' + l.text); if (A.recent.length > 14) A.recent.shift();
       const p = document.createElement('p'); p.className = 'line' + (lv === 2 ? ' q2' : lv === 1 ? ' q1' : ''); p.dataset.text = l.text; p.dataset.ts = ts;
       p.innerHTML = '<span class="ts">' + ts + '</span><span class="tx"></span>'; p.querySelector('.tx').textContent = (lv === 2 ? '❓ ' : lv === 1 ? '? ' : '') + l.text; tr.appendChild(p);
-      if (lv) { A.nq++; const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = l.text; $('qlog').appendChild(q); lastQ = l.text; }
+      if (lv) { A.nq++; const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.dataset.text = l.text; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = l.text; $('qlog').appendChild(q); lastQ = l.text; }
     } else if (l.kind === 'manual') {
       const d = new Date(l.t || j.at); A.lines.push({ kind:'manual', t: d, text: l.text }); A.nq++;
-      const q = document.createElement('p'); q.className = 'qitem'; q.innerHTML = '<span class="ts">' + hhmmss(d) + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + l.text; $('qlog').appendChild(q); lastQ = l.text;
+      const q = document.createElement('p'); q.className = 'qitem'; q.dataset.text = l.text; q.dataset.ts = hhmmss(d); q.innerHTML = '<span class="ts">' + hhmmss(d) + '</span><span></span>'; q.querySelector('span:last-child').textContent = '👆 ' + l.text; $('qlog').appendChild(q); lastQ = l.text;
     } else if (l.kind === 'answer') {
       A.lines.push({ kind:'answer', q: l.q, answer: l.answer, sec: l.sec });
-      const box = document.createElement('div'); box.className = 'ans'; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + (l.q || lastQ) + '　（' + l.sec + '秒）';
+      const box = document.createElement('div'); box.className = 'ans'; box.dataset.text = l.q || lastQ; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + (l.q || lastQ) + '　（' + l.sec + '秒）';
       for (const ln of String(l.answer || '').split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え')) p.className = 'a'; else if (ln.startsWith('[失敗')) p.className = 'err'; p.textContent = ln; box.appendChild(p); }
       $('alog').appendChild(box);
     }
@@ -615,8 +622,11 @@ const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（�
 function geminiModel(){ return /^gemini/.test(cfg.asrModel) ? cfg.asrModel : 'gemini-3.5-flash'; }
 function claudeModel(){ return cfg.llm === 'sonnet' ? 'claude-sonnet-5-5' : 'claude-haiku-5-5'; }
 function claudeThinking(){ return cfg.llm === 'sonnet' ? { type:'between_tools' } : { type:'disabled' }; }
-async function askAnswer(qid, q, ctx){
-  const user = '【直前の講義の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n【検知した発言（これについて判定と回答案）】\n' + q;
+async function askAnswer(qid, q, ctx, force){
+  const head = '【直前の講義の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n';
+  const user = head + (force
+    ? '【学生がタップして指名した発言（必ず答える）】\n' + q + '\n\n学生がこの発言を自分で選んで回答を求めている。質問かどうかの判定はしない。1行目は必ず「判定: 質問（指名）」と書き、2行目から答え・補足・根拠を必ず書く。「なに？」のような短い発言や誤変換の多い発言でも、直前の文字起こしから先生が何を問うているかを推定し、その推定した問いに答える。推定した問いは補足の冒頭に「問いの推定: …」と1行で示す。'
+    : '【検知した発言（これについて判定と回答案）】\n' + q);
   const t0 = Date.now(); let text = '', err = '';
   try {
     if (cfg.llm === 'gemini') {
