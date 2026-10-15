@@ -130,7 +130,8 @@ body.quiet .qitem.weak{color:var(--muted)}
   <form method="dialog" id="settingsForm">
     <h3>設定</h3>
     <div class="row">
-      <label>科目名<input type="text" id="course" placeholder="内部統制論"></label>
+      <label>科目名（時間割から選ぶ）<select id="coursePick"></select></label>
+      <label>科目名（自由入力。選ぶとここに入る）<input type="text" id="course" placeholder="内部統制論"></label>
     </div>
     <div class="row">
       <label>Gemini APIキー（文字起こし）<input type="password" id="gkey" autocomplete="off" placeholder="AIza..."></label>
@@ -196,6 +197,20 @@ const TIMETABLE = [
   { from:'2026-11-30', to:'2027-02-07', dow:6, hm:'16:50', name:'工業簿記' },
   { from:'2026-11-30', to:'2027-02-07', dow:0, hm:'13:00', name:'所得税法' },
 ];
+function buildCoursePick(){
+  const sel = $('coursePick'); if (!sel) return;
+  const names = Array.from(new Set(TIMETABLE.map(t => t.name)));
+  sel.innerHTML = '';
+  for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); }
+  const other = document.createElement('option'); other.value = ''; other.textContent = 'その他（自由入力）'; sel.appendChild(other);
+  sel.addEventListener('change', () => { const v = sel.value; const inp = $('course'); if (!inp) return; if (v) inp.value = v; else { inp.focus(); inp.select(); } });
+  const inp = $('course'); if (inp) inp.addEventListener('input', syncCoursePick);
+}
+function syncCoursePick(){
+  const sel = $('coursePick'); const inp = $('course'); if (!sel || !inp) return;
+  const v = (inp.value || '').trim();
+  sel.value = (v && Array.from(sel.options).some(o => o.value === v)) ? v : '';
+}
 function ymdLocal(d){ return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function autoCourse(){
   const now = new Date(); const ymd = ymdLocal(now); const mins = now.getHours() * 60 + now.getMinutes();
@@ -206,13 +221,13 @@ function autoCourse(){
     const key = ymd + ' ' + t.hm;
     if (cfg.courseAutoKey === key) return;    // この窓では適用済み
     cfg.course = t.name; cfg.courseAutoKey = key; saveCfg();
-    const el = $('course'); if (el) el.value = t.name;
+    const el = $('course'); if (el) { el.value = t.name; syncCoursePick(); }
     setStatus('科目名を時間割から「' + t.name + '」にした');
     return;
   }
 }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } syncCoursePick(); updateNotesInfo(); }
 function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
@@ -797,7 +812,7 @@ window.addEventListener('pageshow', () => { if (A.running) { holdWake(); recover
 window.addEventListener('focus', () => { if (A.running) recover('フォーカス'); });
 
 loadCfg(); if (!cfg.recOn) { cfg.rec = 'yes'; cfg.recOn = 1; saveCfg(); }
-autoCourse(); setInterval(autoCourse, 60000);
+buildCoursePick(); autoCourse(); setInterval(autoCourse, 60000);
 if (cfg.asrModel === 'gstt') { cfg.asrModel = 'gemini-3.5-flash'; delete cfg.sa; saveCfg(); }
 if (!cfg.llmV2) { if (cfg.llm === 'claude') cfg.llm = 'sonnet'; cfg.llmV2 = 1; saveCfg(); }
 if (!cfg.weakV2) { cfg.answerWeak = 'yes'; cfg.weakV2 = 1; saveCfg(); }    // 2026-10-11 疑いにも回答候補を既定で出す（保存済み設定も一度だけ）    // 2026-10-11 回答候補の既定を Sonnet に（保存済み設定も一度だけ）    // Google Speech-to-Text は撤去（2026-10-11）    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
