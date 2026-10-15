@@ -172,6 +172,37 @@ const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', oke
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
+
+/* ---------------- 科目名の自動既定（授業開始の10分前〜10分後） ----------------
+   2026年度の時間割（本人の履修・3Qと4Q、補講・筆記試験週を含む）。窓に入ったら設定の科目名をその科目にする。
+   同じ窓では1回だけ適用するので、その後に手で変えた科目名は上書きしない。 */
+const TIMETABLE = [
+  { from:'2026-10-05', to:'2026-11-29', dow:2, hm:'18:30', name:'創造性マネジメント' },
+  { from:'2026-10-05', to:'2026-11-29', dow:3, hm:'08:50', name:'英文会計ケーススタディ' },
+  { from:'2026-10-05', to:'2026-11-29', dow:4, hm:'13:20', name:'監査制度論' },
+  { from:'2026-10-05', to:'2026-11-29', dow:6, hm:'09:00', name:'原価計算論' },
+  { from:'2026-10-05', to:'2026-11-29', dow:6, hm:'16:50', name:'管理会計論' },
+  { from:'2026-10-05', to:'2026-11-29', dow:0, hm:'13:00', name:'内部統制論' },
+  { from:'2026-11-30', to:'2027-02-07', dow:5, hm:'08:50', name:'連結財務諸表論' },
+  { from:'2026-11-30', to:'2027-02-07', dow:6, hm:'09:00', name:'国際会計論' },
+  { from:'2026-11-30', to:'2027-02-07', dow:6, hm:'16:50', name:'工業簿記' },
+  { from:'2026-11-30', to:'2027-02-07', dow:0, hm:'13:00', name:'所得税法' },
+];
+function ymdLocal(d){ return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function autoCourse(){
+  const now = new Date(); const ymd = ymdLocal(now); const mins = now.getHours() * 60 + now.getMinutes();
+  for (const t of TIMETABLE) {
+    if (ymd < t.from || ymd > t.to || now.getDay() !== t.dow) continue;
+    const hm = t.hm.split(':'); const start = Number(hm[0]) * 60 + Number(hm[1]);
+    if (Math.abs(mins - start) > 10) continue;
+    const key = ymd + ' ' + t.hm;
+    if (cfg.courseAutoKey === key) return;    // この窓では適用済み
+    cfg.course = t.name; cfg.courseAutoKey = key; saveCfg();
+    const el = $('course'); if (el) el.value = t.name;
+    setStatus('科目名を時間割から「' + t.name + '」にした');
+    return;
+  }
+}
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
 function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } updateNotesInfo(); }
 function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
@@ -263,6 +294,7 @@ function startClick(){
   if (A.running) { stop(); return; }
   // iOS Safari は AudioContext をユーザー操作の中でしか起動しない。await より前に同期的に作って resume する
   try { A.ctx = new (window.AudioContext || window.webkitAudioContext)(); A.ctx.resume(); } catch (e) { setStatus('AudioContext を作れない: ' + e.message); return; }
+  autoCourse();
   start();
 }
 async function start(){
@@ -734,6 +766,7 @@ window.addEventListener('pageshow', () => { if (A.running) { holdWake(); recover
 window.addEventListener('focus', () => { if (A.running) recover('フォーカス'); });
 
 loadCfg(); if (!cfg.recOn) { cfg.rec = 'yes'; cfg.recOn = 1; saveCfg(); }
+autoCourse(); setInterval(autoCourse, 60000);
 if (cfg.asrModel === 'gstt') { cfg.asrModel = 'gemini-3.5-flash'; delete cfg.sa; saveCfg(); }
 if (!cfg.llmV2) { if (cfg.llm === 'claude') cfg.llm = 'sonnet'; cfg.llmV2 = 1; saveCfg(); }
 if (!cfg.weakV2) { cfg.answerWeak = 'yes'; cfg.weakV2 = 1; saveCfg(); }    // 2026-10-11 疑いにも回答候補を既定で出す（保存済み設定も一度だけ）    // 2026-10-11 回答候補の既定を Sonnet に（保存済み設定も一度だけ）    // Google Speech-to-Text は撤去（2026-10-11）    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
