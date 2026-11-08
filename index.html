@@ -40,7 +40,15 @@ main{flex:1;display:grid;grid-template-columns:minmax(0,3fr) minmax(300px,2fr);g
 .pane{background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;min-height:0;min-width:0}
 .pane h2{font-size:12px;color:var(--muted);margin:0;padding:8px 12px;border-bottom:1px solid var(--line);letter-spacing:.06em;text-transform:uppercase}
 .scroll{flex:1;overflow-y:auto;padding:10px 12px;min-height:0;-webkit-overflow-scrolling:touch}
-#side{display:grid;grid-template-rows:minmax(0,1fr) minmax(0,1.3fr) auto;gap:10px;min-height:0}
+#side{display:flex;flex-direction:column;gap:10px;min-height:0}
+#qPane{flex:1 1 0} #aPane{flex:1.3 1 0} #cPane{flex:0 0 auto}
+/* 折りたたみ: 見出しをタップで畳む。畳んだ枠は見出しだけになり、空いた分は回答候補が伸びる */
+.pane.foldable h2{cursor:pointer;-webkit-user-select:none;user-select:none;display:flex;align-items:center;gap:6px;-webkit-tap-highlight-color:transparent}
+.pane.foldable h2::before{content:"▾";font-size:11px;color:var(--muted)}
+.pane.foldable h2 .fh{margin-left:auto;font-size:11px;color:var(--muted);letter-spacing:0;text-transform:none;white-space:nowrap}
+.pane.foldable h2 .fh::after{content:"閉じる"}
+#side .pane.fold{flex:0 0 auto} .pane.fold h2{border-bottom:none} .pane.fold h2::before{content:"▸"} .pane.fold h2 .fh::after{content:"開く"}
+#side .pane.fold>:not(h2){display:none}
 #compose{min-height:72px;height:118px;border:none;border-radius:0;background:var(--panel);padding:8px 12px;resize:vertical}
 #composeBar{display:flex;gap:8px;padding:6px 12px;border-top:1px solid var(--line);align-items:center;flex-wrap:wrap}
 #composeBar .hint{flex:1;min-width:0}
@@ -98,19 +106,19 @@ body.quiet .qitem.weak{color:var(--muted)}
 <main>
   <section class="pane" aria-label="文字起こし">
     <h2>文字起こし</h2>
-    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば必ず質問として答える。出た答えが違うときは、その回答候補をタップすると「別の答え」を出す。文を長押しすると右下の「AIに送る文」に溜まり、直してから送れる（左の文は変わらない）。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。</p></div>
+    <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば必ず質問として答える。出た答えが違うときは、その回答候補をタップすると「別の答え」を出す。文を長押しすると右下の「AIに送る文」に溜まり、直してから送れる（左の文は変わらない）。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。右の「検知した質問」「AIに送る文」は見出しをタップすると畳めて、回答候補が広がる。</p></div>
   </section>
   <section id="side">
-    <div class="pane" aria-label="検知した質問">
-      <h2>検知した質問</h2>
+    <div class="pane foldable" id="qPane" aria-label="検知した質問">
+      <h2 id="qHead" role="button" tabindex="0" aria-expanded="true" aria-controls="qlog">検知した質問<span class="fh"></span></h2>
       <div id="qlog" class="scroll"></div>
     </div>
-    <div class="pane" aria-label="回答候補">
+    <div class="pane" id="aPane" aria-label="回答候補">
       <h2 id="ansHead">回答候補</h2>
       <div id="alog" class="scroll"></div>
     </div>
-    <div class="pane" aria-label="AIに送る文">
-      <h2>AIに送る文（左の文を長押しで追加・ここで直す）</h2>
+    <div class="pane foldable" id="cPane" aria-label="AIに送る文">
+      <h2 id="cHead" role="button" tabindex="0" aria-expanded="true" aria-controls="compose">AIに送る文（左の文を長押しで追加・ここで直す）<span class="fh"></span></h2>
       <textarea id="compose" placeholder="左の文を長押しするとここに溜まる。直してから「送る」。左の元の文は変わらない"></textarea>
       <div id="composeBar"><button id="btnComposeSend" class="primary">送る</button><button id="btnComposeClear">消す</button><span class="hint">送ると空になる。タップは今までどおり即答</span></div>
     </div>
@@ -593,7 +601,21 @@ $('transcript').addEventListener('click', (e) => { if (C.fired) { C.fired = fals
    溜めた文はここで直してから「送る」で指名回答（印は ✍️）。送ると窓は空になる。 */
 const C = { timer: null, x: 0, y: 0, fired: false };
 const NL = String.fromCharCode(10);
-function composeAdd(tx){ const ta = $('compose'); if (!ta) return; const v = ta.value || ''; ta.value = v + (v && !v.endsWith(NL) ? NL : '') + tx + NL; ta.scrollTop = ta.scrollHeight; }
+/* 右側の「検知した質問」「AIに送る文」は見出しタップで畳める。畳むと回答候補が広がる。状態はこの端末に残す。
+   長押しで文を足した時は「AIに送る文」を自動で開き、送る・消すで畳んでいた状態に戻す。 */
+const FOLD_KEY = 'lq_fold_v1';
+const F = { qPane: false, cPane: false, cAuto: false };
+function foldLoad(){ try { const j = JSON.parse(localStorage.getItem(FOLD_KEY) || 'null'); if (j) { F.qPane = !!j.qPane; F.cPane = !!j.cPane; } } catch (e) {} }
+function foldSave(){ try { localStorage.setItem(FOLD_KEY, JSON.stringify({ qPane: F.qPane, cPane: F.cPane })); } catch (e) {} }
+function foldApply(id){ const pane = $(id); if (!pane) return; const on = !!F[id]; pane.classList.toggle('fold', on); const h = pane.querySelector('h2'); if (h) h.setAttribute('aria-expanded', on ? 'false' : 'true');
+  if (!on) { const sc = pane.querySelector('.scroll'); if (sc) sc.scrollTop = sc.scrollHeight; } }
+function foldSet(id, on, save){ F[id] = !!on; foldApply(id); if (save !== false) foldSave(); }
+for (const id of ['qPane', 'cPane']) { const h = $(id).querySelector('h2'); const tog = () => { F.cAuto = false; foldSet(id, !F[id]); };
+  h.addEventListener('click', tog); h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tog(); } }); }
+function composeShow(){ if (F.cPane) { F.cAuto = true; foldSet('cPane', false, false); } }    // 畳んであれば一時的に開く（保存はしない）
+function composeDone(){ if (F.cAuto) { F.cAuto = false; foldSet('cPane', true, false); } }    // 自動で開いた分だけ畳み直す
+foldLoad(); foldApply('qPane'); foldApply('cPane');
+function composeAdd(tx){ const ta = $('compose'); if (!ta) return; const v = ta.value || ''; ta.value = v + (v && !v.endsWith(NL) ? NL : '') + tx + NL; composeShow(); ta.scrollTop = ta.scrollHeight; }
 $('transcript').addEventListener('pointerdown', (e) => {
   const p = e.target.closest('.line'); if (!p || !p.dataset.text) return;
   C.x = e.clientX; C.y = e.clientY; C.fired = false; clearTimeout(C.timer);
@@ -605,9 +627,9 @@ $('transcript').addEventListener('contextmenu', (e) => { if (e.target.closest('.
 $('btnComposeSend').addEventListener('click', () => {
   const ta = $('compose'); const tx = (ta.value || '').split(NL).map(x => x.trim()).filter(Boolean).join(' ');
   if (!tx) { setStatus('送る文が空'); return; }
-  forceAsk(tx, hhmmss(new Date()), undefined, '✍️ '); ta.value = '';
+  forceAsk(tx, hhmmss(new Date()), undefined, '✍️ '); ta.value = ''; composeDone();
 });
-$('btnComposeClear').addEventListener('click', () => { $('compose').value = ''; });
+$('btnComposeClear').addEventListener('click', () => { $('compose').value = ''; composeDone(); });
 $('qlog').addEventListener('click', (e) => { const p = e.target.closest('.qitem'); if (p && p.dataset.text) forceAsk(p.dataset.text, p.dataset.ts || hhmmss(new Date())); });
 $('alog').addEventListener('click', (e) => {
   const b = e.target.closest('.ans'); if (!b || !b.dataset.text || b.querySelector('.thinking')) return;
