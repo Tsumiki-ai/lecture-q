@@ -153,6 +153,7 @@ body.quiet .qitem.weak{color:var(--muted)}
     <div class="row">
       <label>無音と見なす秒数<select id="silence"><option value="0.5">0.5</option><option value="0.6" selected>0.6</option><option value="0.8">0.8</option><option value="1.0">1.0</option></select></label>
       <label><span>疑い（橙）にも回答候補</span><select id="answerWeak"><option value="yes" selected>出す</option><option value="no">出さない</option></select></label>
+      <label><span>音の入力</span><select id="audioIn"><option value="mic" selected>マイク（教室）</option><option value="pc">PCの音（Zoomなど。WindowsのChromeかEdgeだけ）</option></select></label>
       <label><span>マイクの音声処理</span><select id="rawMic"><option value="raw" selected>切る（遠くの声向け）</option><option value="auto">端末に任せる</option></select></label>
       <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
       <label><span>文字起こしに用語を渡す</span><select id="asrVocab"><option value="no" selected>渡さない（素の文字起こし）</option><option value="yes">レジュメの用語を渡す（無音時に捏造しやすい）</option></select></label>
@@ -185,7 +186,7 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', rawMic:'raw', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
@@ -235,8 +236,8 @@ function autoCourse(){
   }
 }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } syncCoursePick(); updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } syncCoursePick(); updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -281,7 +282,7 @@ function detectQuestion(text){
 /* ---------------- 音声 ---------------- */
 const A = { running:false, ctx:null, stream:null, proc:null, src:null, gain:null, resample:null, pending:new Float32Array(0), wake:null,
   noise:0.004, buf:[], preroll:[], speechBlocks:0, trailing:0, collecting:false, chunkQ:[], busy:false, recent:[], qid:0, lastSent:['',0], nq:0, lines:[], vocab:'',
-  cbCount:0, rawPeak:0, loud:0.002, agc:1, diagTimer:null, lastSeg:'', lastCb:0, lastMicRetry:0, micRetries:0, recovering:false };
+  cbCount:0, rawPeak:0, loud:0.002, agc:1, diagTimer:null, lastSeg:'', lastCb:0, lastMicRetry:0, micRetries:0, recovering:false, srcKind:'mic', faint:0, faintMax:0 };
 function makeResampler(inRate, outRate){
   const ratio = inRate / outRate; const win = Math.max(1, Math.round(ratio)); let carry = new Float32Array(0); let pos = 0;
   return (input) => {
@@ -308,14 +309,32 @@ function onBlock(blk){
     A.buf = []; A.speechBlocks = 0; A.trailing = 0; A.collecting = false;
   }
 }
+/* PCの音のゲイン。マイクと違って無音は0に近く、大きさはWindowsの音量で決まる（実測: 音量34%で元の音の約20分の1・ミュートだと0）。
+   そこで声の山を追う。大きくなる方はその場で合わせる（山の4分の1より下には置かないので、掛けた後も割れない）。
+   小さくなる方は、いまの山の5%より大きい音が出ている間だけ約4秒で追う。無音の間は動かさない（黙っている間にゲインが上がらない）。
+   5%より小さい音しか来ない状態が約30秒ぶん続いたら、音量を大きく下げたものとして、その間の山に合わせ直す。
+   山が 0.16 付近になるように掛ける（1〜300倍）。区切りに使う雑音の見積もり A.noise は掛けた後の値なので、ゲインが動いた分だけ合わせる。 */
+function pcGain(y, rms){
+  let pk = 0; for (let i = 0; i < y.length; i++) { const a = y[i] < 0 ? -y[i] : y[i]; if (a > pk) pk = a; }
+  const lvl = Math.max(rms, pk / 4);
+  if (lvl > A.loud) { A.loud = lvl; A.faint = 0; A.faintMax = 0; }
+  else if (lvl > A.loud * 0.05) { A.loud += (lvl - A.loud) * 0.02; A.faint = 0; A.faintMax = 0; }
+  else if (lvl > 1e-4) { if (lvl > A.faintMax) A.faintMax = lvl; if (++A.faint > 350) { A.loud = A.faintMax; A.faint = 0; A.faintMax = 0; } }
+  const g = Math.max(1, Math.min(300, 0.16 / A.loud));
+  A.noise *= g / A.agc;
+  return g;
+}
 function onAudio(input){
   A.cbCount++; A.lastCb = Date.now(); A.micRetries = 0;
   const y = A.resample(input);
   // 自動ゲイン: 処理オフのマイクは音が小さいので、声の大きさを推定して 0.06 付近に正規化（1〜60倍）
   let s = 0; for (let i = 0; i < y.length; i++) s += y[i] * y[i]; const rms = Math.sqrt(s / Math.max(1, y.length)) + 1e-9;
   if (rms > A.rawPeak) A.rawPeak = rms;
+  if (A.srcKind === 'pc') A.agc = pcGain(y, rms);    // PCの音は追い方が別（上の pcGain）。マイクは下の2行のまま
+  else {
   if (rms > A.loud) A.loud = 0.995 * A.loud + 0.005 * rms; else A.loud = 0.997 * A.loud + 0.003 * rms;    // 上がる方は約4秒・下がる方は約20秒で追従（咳や近くの物音の1秒でゲインが落ちきらないように）
   A.agc = Math.max(1, Math.min(60, 0.06 / Math.max(A.loud, 1e-5)));
+  }
   for (let i = 0; i < y.length; i++) { const v = y[i] * A.agc; y[i] = v > 1 ? 1 : v < -1 ? -1 : v; }
   if (isRt() && A.resample24) { const z = A.resample24(input); const pcm = new Int16Array(z.length); for (let i = 0; i < z.length; i++) { const v = Math.max(-1, Math.min(1, z[i] * A.agc)); pcm[i] = v < 0 ? v * 32768 : v * 32767; } rtSend(pcm); }
   const merged = new Float32Array(A.pending.length + y.length); merged.set(A.pending); merged.set(y, A.pending.length);
@@ -333,10 +352,12 @@ async function start(){
   loadCfg();    // 設定は設定画面で保存済み。別のタブで保存した値を拾う（古いタブのフォーム内容で上書きしない）
   const needKey = isRt() ? (!cfg.okey && 'OpenAIのキー') : (!cfg.gkey && 'Geminiのキー');
   if (needKey) { setStatus(needKey + 'が無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
-  try { A.stream = await navigator.mediaDevices.getUserMedia(micConstraints()); } catch (e) { setStatus('マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
+  A.srcKind = cfg.audioIn === 'pc' ? 'pc' : 'mic';    // 途中で設定を変えても、この回は開始時の入力のまま
+  try { A.stream = await (A.srcKind === 'pc' ? getPcAudio() : navigator.mediaDevices.getUserMedia(micConstraints())); } catch (e) { setStatus(A.srcKind === 'pc' ? pcAudioError(e) : 'マイクが使えない: ' + e.name + '。Safariの設定でマイクを許可してから再読み込み。'); try { A.ctx.close(); } catch (e2) {} A.ctx = null; return; }
   if (A.ctx.state !== 'running') { try { await A.ctx.resume(); } catch (e) {} }
   A.resample = makeResampler(A.ctx.sampleRate, SR); A.resample24 = makeResampler(A.ctx.sampleRate, 24000);
   A.cbCount = 0; A.rawPeak = 0; A.loud = 0.002; A.agc = 1; A.lastCb = Date.now(); A.lastMicRetry = 0; A.micRetries = 0; A.recovering = false;
+  if (A.srcKind === 'pc') { A.loud = 0.01; A.agc = 16; A.noise = 0.004; A.faint = 0; A.faintMax = 0; }    // PCの音の出発点（音量34%での声の山。pcGain がすぐ合わせ直す）
   A.ctx.onstatechange = ctxStateChanged;
   wireAudio();
   A.vocab = buildVocab(cfg.notes);
@@ -345,7 +366,7 @@ async function start(){
   if (isRt()) rtConnect();
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
   $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? geminiModel() : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
-  setStatus('聞き取り中（' + asrLabel() + '・マイク ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
+  setStatus('聞き取り中（' + asrLabel() + (A.srcKind === 'pc' ? '・PCの音 ' : '・マイク ') + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (A.srcKind !== 'pc' && cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
   holdWake();
   // 3秒ごとに入力の生存確認。コールバックが来ていなければ復帰処理（AudioContext再開→マイク取り直し）。wake lock も切れていれば取り直す
   clearInterval(A.diagTimer); let lastCount = 0;
@@ -355,9 +376,9 @@ async function start(){
     const tr = A.stream && A.stream.getAudioTracks()[0];
     holdWake();
     if (got === 0) {
-      if (!A.recovering) recover(A.ctx && A.ctx.state !== 'running' ? 'AudioContext ' + A.ctx.state : (tr && tr.muted) ? 'マイクが無音' : '音が来ない');
+      if (!A.recovering) recover(A.ctx && A.ctx.state !== 'running' ? 'AudioContext ' + A.ctx.state : (tr && tr.muted) ? (A.srcKind === 'pc' ? 'PCの音が無音' : 'マイクが無音') : '音が来ない');
     } else if (!A.lastSeg || Date.now() - A.lastSegAt > 8000) {
-      setStatus('聞き取り中 ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz・入力レベル ' + (20 * Math.log10(Math.max(A.rawPeak, 1e-6))).toFixed(0) + 'dB・自動ゲイン x' + A.agc.toFixed(0));
+      setStatus('聞き取り中 ' + Math.round(A.ctx.sampleRate / 1000) + 'kHz・入力レベル ' + (20 * Math.log10(Math.max(A.rawPeak, 1e-6))).toFixed(0) + 'dB・自動ゲイン x' + A.agc.toFixed(0) + (A.srcKind === 'pc' && A.rawPeak < 1e-4 ? '・無音（PCがミュートだと取れない）' : ''));
       A.rawPeak = 0;
     }
   }, 3000);
@@ -367,6 +388,25 @@ async function start(){
    マイクのトラックが muted か ended になって onaudioprocess が来なくなる。
    復帰の順序: AudioContext.resume → 1.5秒待ってコールバックが戻るか見る → 戻らなければ getUserMedia をやり直して配線し直す。
    録音中なら新しいストリームで MediaRecorder も作り直す（そこから別の本として積まれ、保存は1本ずつ）。スリープ中の音は取れない。 */
+/* PCで鳴っている音（Zoomなど）を入力にする。WindowsのChrome／Edgeは、画面共有で画面を選び「システムの音声を含めて共有する」をオンにすると、
+   既定の出力に流れる音をそのまま渡してくれる（イヤホンで聞いていても取れる。既定でない出力に流した音は取れない）。形の上では画面も共有するが、映像はすぐ止めて使わない。
+   取り直しにはもう一度の選択が要るので、共有が切れたら自動復帰はせず停止する。iPadのSafariにはこの機能が無い。 */
+async function getPcAudio(){
+  const md = navigator.mediaDevices;
+  if (!md || !md.getDisplayMedia) { const e = new Error('getDisplayMedia が無い'); e.name = 'NoDisplayMedia'; throw e; }
+  const s = await md.getDisplayMedia({ video: { displaySurface: 'monitor' }, audio: { echoCancellation:false, noiseSuppression:false, autoGainControl:false }, systemAudio: 'include', monitorTypeSurfaces: 'include' });
+  s.getVideoTracks().forEach(t => t.stop());
+  const at = s.getAudioTracks();
+  if (!at.length) { const e = new Error('音声トラックが無い'); e.name = 'NoAudioTrack'; throw e; }
+  return new MediaStream(at);
+}
+function pcAudioError(e){
+  if (e.name === 'NoDisplayMedia') return 'この端末ではPCの音を取れない（WindowsのChromeかEdgeだけ）。設定の「音の入力」をマイクに戻す。';
+  if (e.name === 'NoAudioTrack') return '音が付いていない。もう一度「開始」を押し、画面の絵を押して選び、「システムの音声を含めて共有する」をオンにしてから共有する。';
+  if (e.name === 'NotAllowedError') return 'PCの音の共有がキャンセルされた。もう一度「開始」を押す。';
+  return 'PCの音を取れない: ' + e.name + (e.message ? '（' + e.message + '）' : '');
+}
+function pcEnded(){ if (!A.running) return; stop(); setStatus('PCの音の共有が終わったので停止した。続けるなら「開始」を押して選び直す。'); }
 function micConstraints(){ const raw = cfg.rawMic !== 'auto'; return { audio: raw ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false } : true }; }
 function wireAudio(){
   try { A.proc && A.proc.disconnect(); A.src && A.src.disconnect(); A.gain && A.gain.disconnect(); } catch (e) {}
@@ -376,7 +416,7 @@ function wireAudio(){
   A.proc.onaudioprocess = (ev) => { if (A.running) onAudio(ev.inputBuffer.getChannelData(0)); };
   A.src.connect(A.proc); A.proc.connect(A.gain); A.gain.connect(A.ctx.destination);
   const tr = A.stream.getAudioTracks()[0];
-  if (tr) { tr.onended = () => recover('マイクが切れた'); tr.onunmute = () => recover('マイク復帰'); }
+  if (tr) { tr.onended = () => (A.srcKind === 'pc' ? pcEnded() : recover('マイクが切れた')); tr.onunmute = () => recover(A.srcKind === 'pc' ? 'PCの音が復帰' : 'マイク復帰'); }
 }
 async function ensureMic(){
   const s = await navigator.mediaDevices.getUserMedia(micConstraints());
@@ -398,6 +438,7 @@ async function recover(why){
     const dead = !tr || tr.readyState === 'ended';
     const stale = Date.now() - A.lastCb > 2500;
     if (!dead && !stale) { if (wasStopped) setStatus('復帰した（' + why + '）'); return; }
+    if (A.srcKind === 'pc') { if (dead) pcEnded(); return; }    // PCの音は自動では取り直せない（共有の選び直しが要る）
     if (A.micRetries >= 3) { setStatus('マイクが戻らない。停止→開始をやり直す'); return; }
     if (Date.now() - A.lastMicRetry < 8000) return;    // 取り直しの連打を避ける
     A.lastMicRetry = Date.now(); A.micRetries++;
@@ -839,7 +880,7 @@ if (cfg.asrModel === 'gstt') { cfg.asrModel = 'gemini-3.5-flash'; delete cfg.sa;
 if (!cfg.llmV2) { if (cfg.llm === 'claude') cfg.llm = 'sonnet'; cfg.llmV2 = 1; saveCfg(); }
 if (!cfg.weakV2) { cfg.answerWeak = 'yes'; cfg.weakV2 = 1; saveCfg(); }    // 2026-10-11 疑いにも回答候補を既定で出す（保存済み設定も一度だけ）    // 2026-10-11 回答候補の既定を Sonnet に（保存済み設定も一度だけ）    // Google Speech-to-Text は撤去（2026-10-11）    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
 applyQuiet(); cfgToForm(); restoreLog(); recCheck(); gistLoad(); updateGistInfo();
-if (cfg.gkey) setStatus('準備OK。開始を押すとマイクの許可を求める' + (cfg.course ? '（' + cfg.course + '）' : ''));
+if (cfg.gkey) setStatus((cfg.audioIn === 'pc' ? '準備OK。開始を押すと共有の画面が出る。画面の絵を押して選び、「システムの音声を含めて共有する」をオンにして共有' : '準備OK。開始を押すとマイクの許可を求める') + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
 </script>
 </body>
