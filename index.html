@@ -731,6 +731,13 @@ function recTx(mode, fn){ return recDb().then(db => new Promise((res, rej) => { 
 function recPut(obj){ return recTx('readwrite', st => st.put(obj)); }
 function recAll(){ return recTx('readonly', st => st.getAll()); }
 function recClear(){ return recTx('readwrite', st => st.clear()); }
+/* 保存ファイルの名前: 科目名_2026-11-14_1650（端末の時刻＝日本時間）。科目名が空なら lecture。
+   録音は断片ごとに科目名を持たせ、1本の中でいちばん多い科目名を使う（早めに開始して前の科目名のまま始まった時のため）。
+   科目名を持たない古い断片は、いまの設定の科目名で代用する。同じ分に始まった本が2つあれば _1 _2 を付ける。
+   ログは最初の行の時刻を使う（gistのファイル名と同じ考え方）。 */
+function fileStem(course, d){ const z = n => String(n).padStart(2, '0'); const c = String(course || '').trim().replace(/[\\/:*?"<>|\s]+/g, '_').replace(/^_+|_+$/g, ''); return (c || 'lecture') + '_' + d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate()) + '_' + z(d.getHours()) + z(d.getMinutes()); }
+function recCourse(chunks){ const n = {}; let best = null; for (const c of chunks) { if (typeof c.course !== 'string') continue; n[c.course] = (n[c.course] || 0) + 1; if (best === null || n[c.course] > n[best]) best = c.course; } return best === null ? cfg.course : best; }
+function recFileName(all, sess, ext){ const stem = s => fileStem(recCourse(all.filter(c => c.sess === s)), new Date(s)); const mine = stem(sess); const same = [...new Set(all.map(c => c.sess))].filter(s => stem(s) === mine); return mine + (same.length > 1 ? '_' + (same.indexOf(sess) + 1) : '') + '.' + ext; }
 function recStart(){
   if (cfg.rec !== 'yes') return;
   if (!window.MediaRecorder) { setStatus('このブラウザは録音に対応していない（聞き取りは続ける）'); return; }
@@ -738,7 +745,7 @@ function recStart(){
   try { R.rec = new MediaRecorder(A.stream, Object.assign({ audioBitsPerSecond: 64000 }, R.mime ? { mimeType: R.mime } : {})); }
   catch (e) { setStatus('録音を開始できない: ' + e.message + '（聞き取りは続ける）'); R.rec = null; return; }
   R.sess = Date.now(); R.n = 0; R.saveIdx = 0;
-  R.rec.ondataavailable = (ev) => { if (!ev.data || !ev.data.size) return; R.n++; recPut({ sess: R.sess, i: R.n, t: Date.now(), type: ev.data.type || R.mime, blob: ev.data }).then(() => { $('btnRec').hidden = false; }).catch(e => setStatus('録音の断片を保存できない: ' + (e && e.message))); };
+  R.rec.ondataavailable = (ev) => { if (!ev.data || !ev.data.size) return; R.n++; recPut({ sess: R.sess, i: R.n, t: Date.now(), course: cfg.course || '', type: ev.data.type || R.mime, blob: ev.data }).then(() => { $('btnRec').hidden = false; }).catch(e => setStatus('録音の断片を保存できない: ' + (e && e.message))); };
   R.rec.onerror = (ev) => setStatus('録音エラー: ' + (ev.error && ev.error.message || ''));
   try { R.rec.start(30000); } catch (e) { setStatus('録音を開始できない: ' + e.message); R.rec = null; }
 }
@@ -755,7 +762,7 @@ async function recSave(){
   const sess = sessions[R.saveIdx]; const chunks = all.filter(c => c.sess === sess);
   const type = chunks[0].type || 'audio/mp4'; const ext = /mp4/.test(type) ? 'm4a' : /webm/.test(type) ? 'webm' : 'bin';
   const blob = new Blob(chunks.map(c => c.blob), { type });
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_rec_' + new Date(sess).toISOString().slice(0, 16).replace(/[-:T]/g, '') + (sessions.length > 1 ? '_' + (R.saveIdx + 1) : '') + '.' + ext; document.body.appendChild(a); a.click();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = recFileName(all, sess, ext); document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
   R.saveIdx++;
   setStatus('録音を書き出した（' + (blob.size / 1048576).toFixed(1) + ' MB・' + chunks.length + ' 片' + (sessions.length > 1 ? '・' + R.saveIdx + '/' + sessions.length + ' 本目。もう一度押すと次の本' : '') + '）。全部保存できたら「クリア」で消す');
@@ -805,7 +812,7 @@ async function askAnswer(qid, q, ctx, force, alt){
 /* ---------------- ログ ---------------- */
 function hhmmss(d){ return d.toTimeString().slice(0, 8); }
 function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : l.kind === 'manual' ? ('    [手動で質問] ' + l.text) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
-$('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'lecture_log_' + new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '') + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
+$('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileStem(cfg.course, (A.lines.find(l => l.t instanceof Date) || {}).t || new Date()) + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
 $('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
 $('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
 
