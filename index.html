@@ -588,7 +588,8 @@ function rtPartial(text){
   const tr = $('transcript'); let el = tr.querySelector('.line.partial');
   if (!text) { if (el) el.remove(); return; }
   if (!el) { el = document.createElement('p'); el.className = 'line partial'; el.innerHTML = '<span class="ts"></span><span class="tx"></span>'; tr.appendChild(el); }
-  el.querySelector('.ts').textContent = hhmmss(new Date()); el.querySelector('.tx').textContent = text; tr.scrollTop = tr.scrollHeight;
+  const ts = hhmmss(new Date()); el.dataset.text = text; el.dataset.ts = ts;    // 押すと、この時点の文を回答候補へ送れる（長押しで「AIに送る文」にも足せる）
+  el.querySelector('.ts').textContent = ts; el.querySelector('.tx').textContent = text; tr.scrollTop = tr.scrollHeight;
 }
 function rtEvent(m){
   const t = m.type || '';
@@ -726,13 +727,17 @@ function handleSegment(tx, lat, proc, sec){
 /* ---------------- 手動で質問として送る（タップ＝指名） ----------------
    文字起こしの行・「検知した質問」の項目・回答候補の箱（判定が「質問ではない」か失敗のもの）のどれをタップしても、
    その文を質問として強制的に答えさせる。判定は飛ばし、短い発言でも直前の文脈から問いを推定して答える。 */
-function manualAsk(p){ const tx = p.dataset.text; if (!tx) return; p.classList.add('manual'); forceAsk(tx, p.dataset.ts || hhmmss(new Date())); }
-function forceAsk(tx, ts, alt, mark){
+function manualAsk(p){
+  const tx = p.dataset.text; if (!tx || tx === '…') return; p.classList.add('manual');
+  const part = p.classList.contains('partial');
+  forceAsk(tx, p.dataset.ts || hhmmss(new Date()), undefined, part ? '👆（途中の文） ' : undefined, part);
+}
+function forceAsk(tx, ts, alt, mark, live){
   mark = mark || '👆 ';
   if (cfg.llm === 'off') { setStatus('回答候補がオフ。設定で提供元を選ぶ'); return; }
   const qid = ++A.qid;
   // 文脈はその文より前の直近10文
-  const idx = A.recent.findIndex(r => r.endsWith(' ' + tx)); const before = idx >= 0 ? A.recent.slice(0, idx) : A.recent.slice(0, -1);
+  const idx = A.recent.findIndex(r => r.endsWith(' ' + tx)); const before = idx >= 0 ? A.recent.slice(0, idx) : (live ? A.recent.slice() : A.recent.slice(0, -1));
   const qs = A.lines.filter(l => ((l.kind === 'seg' && l.level) || l.kind === 'manual') && l.text !== tx).slice(-5).map(l => '[' + (l.t instanceof Date ? hhmmss(l.t) : '') + '] ' + l.text).join('\n');
   const ctx = before.slice(-24).join('\n') + (qs ? '\n\n【少し前に検知した質問（古い→新しい）。指名された文はこの流れの続き】\n' + qs : '');
   const q = document.createElement('p'); q.className = 'qitem'; q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = mark + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
