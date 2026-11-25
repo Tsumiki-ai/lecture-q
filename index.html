@@ -88,6 +88,7 @@ textarea{min-height:90px;resize:vertical}
 .row>label{flex:1 1 200px}
 .hint{font-size:12px;color:var(--muted);margin:0}
 .notice{font-size:13px;color:var(--muted);padding:10px 12px}
+.sysnote{font-size:13px;color:var(--muted);margin:0 0 8px;padding-left:6px}
 @media (prefers-reduced-motion: no-preference){ body.flash{animation:flash 1.2s ease-out} @keyframes flash{0%{background:#3a3000}100%{background:var(--bg)}} }
 /* 目立たない表示: 入力レベルのバーを消し、検知時の画面の点滅を止め、黄色の帯を細い下線に落とす */
 body.quiet #lvl{display:none}
@@ -120,6 +121,7 @@ body.quiet .qitem.weak{color:var(--muted)}
   <h1>講義アシスト</h1>
   <span id="lvl" aria-hidden="true">音 0%／床 0%</span>
   <div id="status">設定（右下の歯車）でキーと科目を入れてから開始</div>
+  <button id="btnNotesReload" hidden title="つないである資料のファイルを読み直す（Edge が、読んでいいかを聞く）">📄 資料を読み直す</button>
   <button id="btnStart" class="primary">開始</button>
 </header>
 <main>
@@ -429,6 +431,7 @@ async function start(){
   A.ctx.onstatechange = ctxStateChanged;
   wireAudio();
   const linkMsg = await linkP;    // 読み直しの結果（資料が入れ替わっていれば、下の用語と見出しにも反映される）
+  if (linkMsg) sysNote(linkMsg.replace(/^[ ／]+/, ''));    // 状態の欄はすぐ次の知らせで上書きされるので、文字起こしの欄にも残す
   A.vocab = buildVocab(cfg.notes);
   A.running = true;
   recStart();
@@ -1192,12 +1195,15 @@ async function linkedRead(h, ask){    // ask が真の時だけ、読む許可�
   text = text.trim(); if (text.length > 150000) text = text.slice(0, 150000) + NL + '…（以下省略）';
   return { ok:true, text, name: f.name };
 }
-async function linkedReload(){    // ページを開いた時と「開始」の時。返すのは、状態の欄に足す一言（何も無ければ空）
-  const k = notesKey(cfg.course); const h = await fhGet(k); if (!h) return '';
+function linkBtn(need){ const b = $('btnNotesReload'); if (b) b.hidden = !need; }    // 上の「📄 資料を読み直す」は、読む許可が要る時だけ出す
+function sysNote(text){ const tr = $('transcript'); if (!tr || !text) return; const p = document.createElement('p'); p.className = 'sysnote'; p.textContent = text; tr.appendChild(p); tr.scrollTop = tr.scrollHeight; }
+async function linkedReload(ask){    // ページを開いた時・「開始」の時・設定を保存した時は ask なし（窓を出さない）。上のボタンを押した時だけ ask あり
+  const k = notesKey(cfg.course); const h = await fhGet(k); if (!h) { linkBtn(false); return ''; }
   try {
-    const r = await linkedRead(h, false);
-    if (!r.ok) return ' ⚠ 資料のファイルを読む許可が切れている（設定の「今すぐ読み直す」を押す）。前に取り込んだ資料を使う';
-    if (!r.text || r.text === (cfg.notes || '').trim()) return '';
+    const r = await linkedRead(h, !!ask);
+    if (!r.ok) { linkBtn(true); return ' ⚠ 資料のファイルを読む許可が切れている（上の「📄 資料を読み直す」を押す）。前に取り込んだ資料を使う'; }
+    linkBtn(false);
+    if (!r.text || r.text === (cfg.notes || '').trim()) return ask ? ' ／資料のファイルを読んだ（中身は前と同じ）' : '';
     if (notesKey(cfg.course) !== k) return '';    // 読んでいる間に科目が替わった
     cfg.notes = r.text; cfg.notesName = r.name; notesPut(k, r.text, r.name); saveCfg();
     return ' ／資料を読み直した（' + r.text.length.toLocaleString() + ' 文字）';
@@ -1229,6 +1235,14 @@ $('btnLinkReload').addEventListener('click', async () => {
   } catch (e) { setStatus('資料のファイルを読めなかった: ' + ((e && e.message) || e)); }
 });
 $('btnLinkOff').addEventListener('click', async () => { const k = notesKey($('course').value); if (!k) return; try { await fhDel(k); } catch (e) {} await linkInfo(); setStatus('ファイルとのつなぎを外した（取り込んである資料は残る）'); });
+$('btnNotesReload').addEventListener('click', async () => {    // 読む許可を聞いてから読み直す（聞き取りの最中でも押せる）
+  const m = await linkedReload(true);
+  if (/許可が切れている/.test(m)) { setStatus('資料のファイルを読む許可が出なかった'); return; }
+  if (!$('dlg').open) cfgToForm();
+  if (A.running) { A.vocab = buildVocab(cfg.notes); $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? geminiModel() : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）'); }
+  const s = m.replace(/^[ ／]+/, ''); if (s) { setStatus(s); sysNote(s); }
+});
+$('settingsForm').addEventListener('submit', () => { linkedReload().then((m) => { if (m && !$('dlg').open) cfgToForm(); }).catch(() => {}); });    // 保存の後（科目が替わった時など）に、つなぎの状態を見直す
 $('btnSettings').addEventListener('click', linkInfo);
 $('course').addEventListener('change', linkInfo); $('coursePick').addEventListener('change', linkInfo);
 /* ---------------- 資料の取り込み（このPCの中だけ） ----------------
