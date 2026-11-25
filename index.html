@@ -190,6 +190,12 @@ body.quiet .qitem.weak{color:var(--muted)}
     <label>レジュメ・資料（PDF か テキスト。科目ごとに覚える。回答の根拠と、用語の聞き取りに使う）
       <input type="file" id="notesFile" accept=".pdf,.txt,.md,text/plain,application/pdf">
     </label>
+    <div class="row" id="linkRow" hidden>
+      <button type="button" id="btnLinkFile">このPCのファイルとつなぐ（直したら自動で読み直す）</button>
+      <button type="button" id="btnLinkReload" hidden>今すぐ読み直す</button>
+      <button type="button" id="btnLinkOff" hidden>つなぎを外す</button>
+    </div>
+    <p class="hint" id="linkInfo" hidden></p>
     <label>レジュメの本文（貼り付けでも可）<textarea id="notes" placeholder="ここに貼るか、上でファイルを選ぶ"></textarea></label>
     <p class="hint" id="notesInfo">レジュメなし</p>
     <p class="hint">キーとレジュメはこの端末のブラウザにだけ保存される。</p>
@@ -411,6 +417,7 @@ function startClick(){
 }
 async function start(){
   loadCfg();    // 設定は設定画面で保存済み。別のタブで保存した値を拾う（古いタブのフォーム内容で上書きしない）
+  const linkP = linkedReload().catch(() => '');    // 資料のファイルをつないであれば読み直す（許可の窓は出さない。音の取得と並べて走らせる）
   const needKey = isRt() ? (!cfg.okey && 'OpenAIのキー') : (!cfg.gkey && 'Geminiのキー');
   if (needKey) { setStatus(needKey + 'が無い。設定に入れてから開始。'); try { A.ctx.close(); } catch (e) {} A.ctx = null; openSettings(); return; }
   A.srcKind = cfg.audioIn === 'pc' ? 'pc' : 'mic';    // 途中で設定を変えても、この回は開始時の入力のまま
@@ -421,6 +428,7 @@ async function start(){
   if (A.srcKind === 'pc') { A.loud = 0.01; A.agc = 16; A.noise = 0.004; A.faint = 0; A.faintMax = 0; }    // PCの音の出発点（音量34%での声の山。pcGain がすぐ合わせ直す）
   A.ctx.onstatechange = ctxStateChanged;
   wireAudio();
+  const linkMsg = await linkP;    // 読み直しの結果（資料が入れ替わっていれば、下の用語と見出しにも反映される）
   A.vocab = buildVocab(cfg.notes);
   A.running = true;
   recStart();
@@ -428,7 +436,7 @@ async function start(){
   LV.off = false; LV.fails = 0; liveConnect();
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
   $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? geminiModel() : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
-  setStatus((isKondan() ? '懇談・' : '') + '聞き取り中（' + asrLabel() + (A.srcKind === 'pc' ? '・PCの音 ' : '・マイク ') + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (A.srcKind !== 'pc' && cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）' + (isKondan() && !cfg.notes ? ' ⚠ 懇談の資料が入っていない（設定で読み込む）' : ''));
+  setStatus((isKondan() ? '懇談・' : '') + '聞き取り中（' + asrLabel() + (A.srcKind === 'pc' ? '・PCの音 ' : '・マイク ') + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (A.srcKind !== 'pc' && cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）' + (isKondan() && !cfg.notes ? ' ⚠ 懇談の資料が入っていない（設定で読み込む）' : '') + linkMsg);
   holdWake();
   // 3秒ごとに入力の生存確認。コールバックが来ていなければ復帰処理（AudioContext再開→マイク取り直し）。wake lock も切れていれば取り直す
   clearInterval(A.diagTimer); let lastCount = 0;
@@ -1165,6 +1173,64 @@ $('notesFile').addEventListener('change', async (e) => {
     $('notes').value = text; cfg.notesName = f.name; NF.dirty = true; updateNotesInfo(); setStatus('レジュメを読み込んだ（' + text.length.toLocaleString() + ' 文字）。保存を押す');
   } catch (err) { setStatus('レジュメを読めなかった: ' + err.message + '。本文を貼り付けで入れる'); }
 });
+/* ---------------- 資料のファイルとつなぐ（このPCの中だけ） ----------------
+   設定で一度ファイルを選ぶと、その場所（ファイルの取っ手）を科目ごとにこのブラウザに覚える。ページを開いた時と「開始」の時に、
+   読む許可があれば黙ってそのファイルを読み直し、中身が変わっていれば資料を入れ替える。許可が無い時は窓を出さず、前に取り込んだ資料を使う
+   （許可の窓は、設定の「今すぐ読み直す」を押した時だけ出す）。ファイルの中身はこのブラウザの中にだけ置き、ページの置き場には送らない。
+   Edge と Chrome のPC版だけ（ほかのブラウザでは、この欄そのものを出さない）。 */
+const FH = { db: null };
+function fhOk(){ return typeof window.showOpenFilePicker === 'function' && !!window.indexedDB; }
+function fhDb(){ return new Promise((res, rej) => { if (FH.db) return res(FH.db); const q = indexedDB.open('lq_files', 1); q.onupgradeneeded = () => { q.result.createObjectStore('handles'); }; q.onsuccess = () => { FH.db = q.result; res(FH.db); }; q.onerror = () => rej(q.error); }); }
+async function fhGet(k){ if (!fhOk() || !k) return null; try { const db = await fhDb(); return await new Promise((res, rej) => { const r = db.transaction('handles').objectStore('handles').get(k); r.onsuccess = () => res(r.result || null); r.onerror = () => rej(r.error); }); } catch (e) { return null; } }
+async function fhPut(k, h){ const db = await fhDb(); return new Promise((res, rej) => { const tx = db.transaction('handles', 'readwrite'); tx.objectStore('handles').put(h, k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+async function fhDel(k){ const db = await fhDb(); return new Promise((res, rej) => { const tx = db.transaction('handles', 'readwrite'); tx.objectStore('handles').delete(k); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+async function linkedRead(h, ask){    // ask が真の時だけ、読む許可の窓を出す（ボタンを押した時）
+  let perm = 'granted';
+  if (h.queryPermission) { perm = await h.queryPermission({ mode:'read' }); if (perm !== 'granted' && ask && h.requestPermission) perm = await h.requestPermission({ mode:'read' }); }
+  if (perm !== 'granted') return { ok:false };
+  const f = await h.getFile(); let text = await f.text(); if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  text = text.trim(); if (text.length > 150000) text = text.slice(0, 150000) + NL + '…（以下省略）';
+  return { ok:true, text, name: f.name };
+}
+async function linkedReload(){    // ページを開いた時と「開始」の時。返すのは、状態の欄に足す一言（何も無ければ空）
+  const k = notesKey(cfg.course); const h = await fhGet(k); if (!h) return '';
+  try {
+    const r = await linkedRead(h, false);
+    if (!r.ok) return ' ⚠ 資料のファイルを読む許可が切れている（設定の「今すぐ読み直す」を押す）。前に取り込んだ資料を使う';
+    if (!r.text || r.text === (cfg.notes || '').trim()) return '';
+    if (notesKey(cfg.course) !== k) return '';    // 読んでいる間に科目が替わった
+    cfg.notes = r.text; cfg.notesName = r.name; notesPut(k, r.text, r.name); saveCfg();
+    return ' ／資料を読み直した（' + r.text.length.toLocaleString() + ' 文字）';
+  } catch (e) { return ' ⚠ 資料のファイルを読めなかった（' + ((e && e.name) || 'エラー') + '）。前に取り込んだ資料を使う'; }
+}
+async function linkInfo(){    // 設定の画面の「つなぐ」の欄を、今の科目名に合わせて出し直す
+  const row = $('linkRow'), info = $('linkInfo'); if (!row || !info) return;
+  if (!fhOk()) { row.hidden = true; info.hidden = true; return; }
+  row.hidden = false; const k = notesKey($('course').value); const h = await fhGet(k);
+  $('btnLinkReload').hidden = !h; $('btnLinkOff').hidden = !h; info.hidden = !h;
+  if (h) info.textContent = 'つないであるファイル: ' + h.name + '（ページを開いた時と「開始」の時に読み直す。読む許可を聞かれた時に、毎回許可する方を選ぶと、次からは聞かれない）';
+}
+$('btnLinkFile').addEventListener('click', async () => {
+  const k = notesKey($('course').value); if (!k) { setStatus('先に科目名を入れる'); return; }
+  try {
+    const hs = await window.showOpenFilePicker({ multiple:false, types:[{ description:'テキスト', accept:{ 'text/plain':['.txt', '.md'] } }] }); const h = hs && hs[0]; if (!h) return;
+    const r = await linkedRead(h, true); if (!r.ok) { setStatus('ファイルを読む許可が出なかった'); return; }
+    if (!r.text) { setStatus('ファイルが空'); return; }
+    await fhPut(k, h); $('notes').value = r.text; cfg.notesName = r.name; NF.dirty = true; updateNotesInfo(); await linkInfo();
+    setStatus('「' + k + '」の資料をファイルとつないだ（' + r.text.length.toLocaleString() + ' 文字）。保存を押す');
+  } catch (e) { if (e && e.name === 'AbortError') return; setStatus('ファイルとつなげなかった: ' + ((e && e.message) || e)); }
+});
+$('btnLinkReload').addEventListener('click', async () => {
+  const k = notesKey($('course').value); const h = await fhGet(k); if (!h) return;
+  try {
+    const r = await linkedRead(h, true); if (!r.ok) { setStatus('ファイルを読む許可が出なかった'); return; }
+    if (!r.text) { setStatus('ファイルが空'); return; }
+    $('notes').value = r.text; cfg.notesName = r.name; NF.dirty = true; updateNotesInfo(); setStatus('資料を読み直した（' + r.text.length.toLocaleString() + ' 文字）。保存を押す');
+  } catch (e) { setStatus('資料のファイルを読めなかった: ' + ((e && e.message) || e)); }
+});
+$('btnLinkOff').addEventListener('click', async () => { const k = notesKey($('course').value); if (!k) return; try { await fhDel(k); } catch (e) {} await linkInfo(); setStatus('ファイルとのつなぎを外した（取り込んである資料は残る）'); });
+$('btnSettings').addEventListener('click', linkInfo);
+$('course').addEventListener('change', linkInfo); $('coursePick').addEventListener('change', linkInfo);
 /* ---------------- 資料の取り込み（このPCの中だけ） ----------------
    ?notesFrom=http://127.0.0.1:ポート/…&course=科目名 を付けて開くと、このPCの中で動いている受け渡し用のサーバーから資料の文を受け取り、
    その科目の資料として覚える（確かめの窓を出す）。受け取る先は 127.0.0.1 と localhost だけ。資料そのものは、このページの置き場には置かない。 */
@@ -1196,6 +1262,7 @@ if (cfg.asrModel === 'gstt') { cfg.asrModel = 'gemini-3.5-flash'; delete cfg.sa;
 if (!cfg.llmV2) { if (cfg.llm === 'claude') cfg.llm = 'sonnet'; cfg.llmV2 = 1; saveCfg(); }
 if (!cfg.weakV2) { cfg.answerWeak = 'yes'; cfg.weakV2 = 1; saveCfg(); }    // 2026-10-11 疑いにも回答候補を既定で出す（保存済み設定も一度だけ）    // 2026-10-11 回答候補の既定を Sonnet に（保存済み設定も一度だけ）    // Google Speech-to-Text は撤去（2026-10-11）    // 2026-10-11 録音の既定をオンに（保存済みの設定も一度だけ切り替える）
 applyQuiet(); cfgToForm(); restoreLog(); recCheck(); gistLoad(); updateGistInfo(); const importing = /[?&]notesFrom=/.test(location.search); importNotesFromUrl();
+linkedReload().then((m) => { if (m && !A.running && !$('dlg').open) cfgToForm(); }).catch(() => {});    // つないである資料のファイルを、許可があれば読み直す
 if (cfg.gkey && !importing) setStatus((cfg.audioIn === 'pc' ? '準備OK。開始を押すと共有の画面が出る。画面の絵を押して選び、「システムの音声を含めて共有する」をオンにして共有' : '準備OK。開始を押すとマイクの許可を求める') + (cfg.course ? '（' + cfg.course + '）' : ''));
 })();
 </script>
