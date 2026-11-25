@@ -97,6 +97,17 @@ body.quiet .line.q1 .tx{border-bottom-style:dotted}
 body.quiet .qitem{color:var(--fg)}
 body.quiet .qitem.weak{color:var(--muted)}
 .line.partial .tx{opacity:.55}
+/* 回答候補: 見えていない新しい回答がある時の知らせ */
+#aPane{position:relative} #alog{position:relative}
+#alogNew{position:absolute;right:12px;bottom:10px;font-size:13px;padding:6px 10px;background:var(--accent);color:#00131c;border-color:transparent;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+#alogNew[hidden]{display:none}
+/* 画面のキーボード: 文字起こしの上半分に重ねて出す。「⌨ キーボード」を押した時だけ出る */
+#tPane{position:relative}
+#kbd{position:absolute;left:0;right:0;top:33px;height:50%;min-height:220px;background:var(--panel2);border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:4px;padding:6px;z-index:5;box-shadow:0 6px 16px rgba(0,0,0,.35)}
+#kbd[hidden]{display:none}
+#kbd .kr{display:flex;gap:4px;flex:1 1 0;min-height:0}
+#kbd button{flex:1 1 0;min-width:0;padding:0;font-size:18px;white-space:nowrap;overflow:hidden;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+#kbd button.wide{flex:2 1 0;font-size:14px} #kbd button.sp{flex:3 1 0} #kbd button.on{background:var(--accent);color:#00131c;border-color:transparent} #kbd button.off{opacity:.35}
 </style>
 </head>
 <body>
@@ -107,8 +118,9 @@ body.quiet .qitem.weak{color:var(--muted)}
   <button id="btnStart" class="primary">開始</button>
 </header>
 <main>
-  <section class="pane" aria-label="文字起こし">
+  <section class="pane" id="tPane" aria-label="文字起こし">
     <h2>文字起こし</h2>
+    <div id="kbd" hidden aria-label="画面のキーボード"></div>
     <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば必ず質問として答える。出た答えが違うときは、その回答候補をタップすると「別の答え」を出す。文を長押しすると右下の「AIに送る文」に溜まり、直してから送れる（左の文は変わらない）。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。右の「検知した質問」「AIに送る文」は見出しをタップすると畳めて、回答候補が広がる。</p></div>
   </section>
   <section id="side">
@@ -119,6 +131,7 @@ body.quiet .qitem.weak{color:var(--muted)}
     <div class="pane" id="aPane" aria-label="回答候補">
       <h2 id="ansHead">回答候補</h2>
       <div id="alog" class="scroll"></div>
+      <button id="alogNew" type="button" hidden>↓ 新しい回答</button>
     </div>
     <div class="pane foldable" id="cPane" aria-label="AIに送る文">
       <h2 id="cHead" role="button" tabindex="0" aria-expanded="true" aria-controls="compose">AIに送る文（左の文を長押しで追加・ここで直す）<span class="fh"></span></h2>
@@ -131,6 +144,7 @@ body.quiet .qitem.weak{color:var(--muted)}
   <button id="btnClear">クリア</button>
   <button id="btnSave">ログ保存</button>
   <button id="btnCopy">ログをコピー</button>
+  <button id="btnKbd" type="button" aria-pressed="false">⌨ キーボード</button>
   <button id="btnRec" hidden>録音を保存</button>
   <span class="spacer"></span>
   <span id="count">質問 0 件</span>
@@ -718,11 +732,30 @@ function handleSegment(tx, lat, proc, sec){
     A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
     const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
     if (lv === 2) { document.body.classList.remove('flash'); void document.body.offsetWidth; document.body.classList.add('flash'); }
-    if (qid) { const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight; }
+    if (qid) { const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); alogAdded(a, false); }
   }
   A.lastSeg = tx; A.lastSegAt = Date.now();
   setStatus('遅れ ' + lat.toFixed(1) + '秒（処理 ' + proc.toFixed(1) + '秒／音声 ' + sec.toFixed(1) + '秒）  待ち ' + A.chunkQ.length);
 }
+
+/* ---------------- 回答候補の表示位置 ----------------
+   自動で出た回答候補は、読んでいる所を動かさない（下に足すだけ）。見えていない新しい回答がある時は「↓ 新しい回答」を出す。
+   自分で押して頼んだ回答（指名）は、その箱が見える所まで動かす。 */
+const AV = { unseen: 0 };
+function alogBadge(){ const b = $('alogNew'); if (!b) return; b.hidden = !AV.unseen; if (AV.unseen) b.textContent = '↓ 新しい回答 ' + AV.unseen; }
+function alogShow(box){ const el = $('alog'); const top = box.offsetTop, bot = top + box.offsetHeight; if (bot > el.scrollTop + el.clientHeight) el.scrollTop = Math.min(top - 6, bot - el.clientHeight + 6); else if (top < el.scrollTop) el.scrollTop = top - 6; }
+function alogMark(box){ const el = $('alog'); if (box.dataset.unseen !== '1' && box.offsetTop + 40 > el.scrollTop + el.clientHeight) { box.dataset.unseen = '1'; AV.unseen++; alogBadge(); } }
+function alogAdded(box, mine){ if (mine) alogShow(box); else alogMark(box); }    // 箱を足した後
+function alogFilled(box){    // 答えが入った後。自分で頼んだ分でも、その箱から目を離して別の所を読んでいる時は動かさない
+  const el = $('alog'); const looking = box.offsetTop >= el.scrollTop - 8 && box.offsetTop < el.scrollTop + el.clientHeight;
+  if (box.dataset.mine === '1' && looking) alogShow(box); else alogMark(box);
+}
+$('alog').addEventListener('scroll', () => {    // 見える所まで来た箱は、数から外す
+  if (!AV.unseen) return; const el = $('alog'); const bottom = el.scrollTop + el.clientHeight;
+  for (const b of el.querySelectorAll('.ans[data-unseen="1"]')) { if (b.offsetTop + 40 <= bottom) { delete b.dataset.unseen; AV.unseen--; } }
+  if (AV.unseen < 0) AV.unseen = 0; alogBadge();
+});
+$('alogNew').addEventListener('click', () => { const el = $('alog'); const first = el.querySelector('.ans[data-unseen="1"]'); el.scrollTop = first ? first.offsetTop - 6 : el.scrollHeight; });
 
 /* ---------------- 手動で質問として送る（タップ＝指名） ----------------
    文字起こしの行・「検知した質問」の項目・回答候補の箱（判定が「質問ではない」か失敗のもの）のどれをタップしても、
@@ -742,7 +775,7 @@ function forceAsk(tx, ts, alt, mark, live){
   const ctx = before.slice(-24).join('\n') + (qs ? '\n\n【少し前に検知した質問（古い→新しい）。指名された文はこの流れの続き】\n' + qs : '');
   const q = document.createElement('p'); q.className = 'qitem'; q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = mark + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
   A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
-  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + mark + (alt ? '別の答え: ' : '') + tx; $('alog').appendChild(a); $('alog').scrollTop = $('alog').scrollHeight;
+  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + mark + (alt ? '別の答え: ' : '') + tx; a.dataset.mine = '1'; $('alog').appendChild(a); alogAdded(a, true);
   A.lines.push({ kind:'manual', t:new Date(), text: tx }); scheduleLogSave();
   askAnswer(qid, tx, ctx, true, alt);
 }
@@ -782,6 +815,88 @@ $('btnComposeSend').addEventListener('click', () => {
   forceAsk(tx, hhmmss(new Date()), undefined, '✍️ '); ta.value = ''; composeDone();
 });
 $('btnComposeClear').addEventListener('click', () => { $('compose').value = ''; composeDone(); });
+
+/* ---------------- 画面のキーボード（ローマ字→かな） ----------------
+   「⌨ キーボード」を押した時だけ、文字起こしの上半分に重ねて出す。打った文字は「AIに送る文」の末尾に入る。
+   かな: ローマ字を打つとひらがなになる（漢字には変えない）。ABC: 打った英字がそのまま入る（⇧で大文字）。
+   「ん」は nn か、n の後に子音・区切りのキー。小さい「っ」は子音を2回。小さい文字は x か l を前に付ける。 */
+const ROMA = (() => {
+  const m = { a:'あ', i:'い', u:'う', e:'え', o:'お', '-':'ー', nn:'ん', "n'":'ん', xn:'ん', wa:'わ', wi:'うぃ', wu:'う', we:'うぇ', wo:'を', ya:'や', yu:'ゆ', ye:'いぇ', yo:'よ',
+    qa:'くぁ', qi:'くぃ', qu:'く', qe:'くぇ', qo:'くぉ', ltsu:'っ',
+    shi:'し', chi:'ち', tsu:'つ', fu:'ふ', ji:'じ', she:'しぇ', che:'ちぇ', je:'じぇ', thi:'てぃ', dhi:'でぃ', dhu:'でゅ', fa:'ふぁ', fi:'ふぃ', fe:'ふぇ', fo:'ふぉ',
+    va:'ゔぁ', vi:'ゔぃ', vu:'ゔ', ve:'ゔぇ', vo:'ゔぉ', xtu:'っ', ltu:'っ', xtsu:'っ', xya:'ゃ', xyu:'ゅ', xyo:'ょ', lya:'ゃ', lyu:'ゅ', lyo:'ょ',
+    ca:'か', cu:'く', co:'こ', ci:'し', ce:'せ' };
+  const rows = { k:'かきくけこ', s:'さしすせそ', t:'たちつてと', n:'なにぬねの', h:'はひふへほ', m:'まみむめも', r:'らりるれろ', g:'がぎぐげご', z:'ざじずぜぞ', d:'だぢづでど', b:'ばびぶべぼ', p:'ぱぴぷぺぽ', x:'ぁぃぅぇぉ', l:'ぁぃぅぇぉ' };
+  const V = 'aiueo';
+  for (const c in rows) for (let i = 0; i < 5; i++) m[c + V[i]] = rows[c][i];
+  const yo = { ky:'き', gy:'ぎ', sy:'し', sh:'し', zy:'じ', jy:'じ', j:'じ', ty:'ち', ch:'ち', dy:'ぢ', ny:'に', hy:'ひ', by:'び', py:'ぴ', my:'み', ry:'り' };
+  for (const c in yo) { m[c + 'a'] = yo[c] + 'ゃ'; m[c + 'u'] = yo[c] + 'ゅ'; m[c + 'o'] = yo[c] + 'ょ'; }
+  return m;
+})();
+const ROMA_PRE = (() => { const s = new Set(); for (const k in ROMA) for (let i = 1; i < k.length; i++) s.add(k.slice(0, i)); return s; })();
+function romaToKana(buf, fin){    // かなにできる所までをかなにし、途中の英字は残す。fin の時は、残った n を「ん」にする
+  let out = '', i = 0; const n = buf.length;
+  while (i < n) {
+    const c = buf[i], d = buf[i + 1];
+    if (c === 'n' && d !== undefined && d !== 'n' && d !== 'y' && d !== "'" && 'aiueo'.indexOf(d) < 0) { out += 'ん'; i++; continue; }
+    if (d !== undefined && c === d && c !== 'n' && /[a-z]/.test(c) && 'aiueo'.indexOf(c) < 0) { out += 'っ'; i++; continue; }
+    if (c === 't' && d === 'c') { out += 'っ'; i++; continue; }    // matcha → まっちゃ
+    let hit = 0;
+    for (let L = Math.min(4, n - i); L >= 1; L--) { const k = buf.substr(i, L); if (ROMA[k]) { out += ROMA[k]; i += L; hit = 1; break; } }
+    if (hit) continue;
+    const rest = buf.slice(i);
+    if (ROMA_PRE.has(rest) || rest === 'n') { if (fin && rest === 'n') return out + 'ん'; return out + rest; }    // まだ続きを待っている
+    out += c; i++;
+  }
+  return out;
+}
+const KB = { open:false, mode:'kana', caps:false, base:'', buf:'', rep:0 };
+function kbdSync(){ const ta = $('compose'); if (ta.value !== KB.base + romaToKana(KB.buf)) { KB.base = ta.value; KB.buf = ''; } }    // ほかの手段で文が変わっていたら、そこから続ける
+function kbdPut(){ const ta = $('compose'); ta.value = KB.base + romaToKana(KB.buf); ta.scrollTop = ta.scrollHeight; }
+function kbdCommit(){ KB.base += romaToKana(KB.buf, true); KB.buf = ''; }
+function kbdKey(k){
+  kbdSync();
+  if (k === 'mode') { kbdCommit(); KB.mode = KB.mode === 'kana' ? 'abc' : 'kana'; kbdDraw(); kbdPut(); return; }
+  if (k === 'caps') { if (KB.mode === 'abc') { KB.caps = !KB.caps; kbdDraw(); } return; }    // 大文字は英数字の時だけ
+  if (k === 'close') { kbdCommit(); kbdPut(); kbdToggle(false); return; }
+  if (k === 'send') { kbdCommit(); kbdPut(); $('btnComposeSend').click(); KB.base = ''; KB.buf = ''; return; }
+  if (k === 'bs') { if (KB.buf) KB.buf = KB.buf.slice(0, -1); else KB.base = Array.from(KB.base).slice(0, -1).join(''); kbdPut(); return; }
+  if (k === 'nl') { kbdCommit(); KB.base += NL; kbdPut(); return; }
+  if (k === 'sp') { kbdCommit(); KB.base += ' '; kbdPut(); return; }
+  if (/^[a-z]$/.test(k)) {
+    if (KB.mode === 'kana') { KB.buf += k; const out = romaToKana(KB.buf); if (!/[a-z']$/.test(out)) { KB.base += out; KB.buf = ''; } }
+    else KB.base += KB.caps ? k.toUpperCase() : k;
+    kbdPut(); return;
+  }
+  kbdCommit(); KB.base += k; kbdPut();    // 数字と記号
+}
+const KBD_ROWS = [['1','2','3','4','5','6','7','8','9','0'], ['q','w','e','r','t','y','u','i','o','p'], ['a','s','d','f','g','h','j','k','l','ー'], ['z','x','c','v','b','n','m','、','。','？']];
+function kbdDraw(){
+  const box = $('kbd'); box.innerHTML = '';
+  const mk = (label, key, cls) => { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.dataset.k = key; if (cls) b.className = cls; return b; };
+  for (const r of KBD_ROWS) { const row = document.createElement('div'); row.className = 'kr'; for (const c of r) row.appendChild(mk(KB.mode === 'abc' && KB.caps && /^[a-z]$/.test(c) ? c.toUpperCase() : c, c)); box.appendChild(row); }
+  const last = document.createElement('div'); last.className = 'kr';
+  const mb = mk(KB.mode === 'kana' ? 'あ' : 'A', 'mode'); mb.title = KB.mode === 'kana' ? '今はかな（ローマ字で打つ）。押すと英数字に替わる' : '今は英数字。押すとかなに替わる'; last.appendChild(mb);    // Windows の「あ／A」と同じで、今の状態を出す
+  last.appendChild(mk('⇧', 'caps', KB.mode === 'kana' ? 'off' : KB.caps ? 'on' : ''));
+  last.appendChild(mk('空白', 'sp', 'wide sp')); last.appendChild(mk('⌫', 'bs', 'wide')); last.appendChild(mk('改行', 'nl', 'wide')); last.appendChild(mk('送る', 'send', 'wide on')); last.appendChild(mk('✕', 'close'));
+  box.appendChild(last);
+}
+function kbdPad(h){ const tr = $('transcript'); const fromBottom = tr.scrollHeight - tr.scrollTop; tr.style.paddingTop = h ? (h + 10) + 'px' : ''; tr.scrollTop = tr.scrollHeight - fromBottom; }    // 文がキーボードの下から始まるように、文字起こしの上を空ける（見えている下側の文は動かさない）
+function kbdSize(){ const tr = $('transcript'), box = $('kbd'); const h = Math.max(220, Math.round(tr.clientHeight / 2)); box.style.top = tr.offsetTop + 'px'; box.style.height = h + 'px'; kbdPad(h); }    // 文字起こしの上半分
+function kbdToggle(on){
+  KB.open = on === undefined ? !KB.open : !!on; const box = $('kbd');
+  if (KB.open) { kbdSize(); KB.base = $('compose').value; KB.buf = ''; kbdDraw(); composeShow(); } else { kbdRepStop(); kbdPad(0); }
+  box.hidden = !KB.open; $('btnKbd').setAttribute('aria-pressed', KB.open ? 'true' : 'false'); $('btnKbd').classList.toggle('primary', KB.open);
+}
+function kbdRepStop(){ if (KB.rep) { clearTimeout(KB.rep); clearInterval(KB.rep); KB.rep = 0; } }
+$('btnKbd').addEventListener('click', () => kbdToggle());
+$('kbd').addEventListener('pointerdown', (e) => {
+  const b = e.target.closest('button'); if (!b) return; e.preventDefault(); const k = b.dataset.k; kbdKey(k);
+  if (k === 'bs') { kbdRepStop(); KB.rep = setTimeout(() => { KB.rep = setInterval(() => kbdKey('bs'), 70); }, 450); }    // ⌫ は押したままで続けて消える
+});
+for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) $('kbd').addEventListener(ev, kbdRepStop);
+window.addEventListener('blur', kbdRepStop);
+window.addEventListener('resize', () => { if (KB.open) kbdSize(); });
 $('qlog').addEventListener('click', (e) => { const p = e.target.closest('.qitem'); if (p && p.dataset.text) forceAsk(p.dataset.text, p.dataset.ts || hhmmss(new Date())); });
 $('alog').addEventListener('click', (e) => {
   const b = e.target.closest('.ans'); if (!b || !b.dataset.text || b.querySelector('.thinking')) return;
@@ -918,7 +1033,7 @@ async function askAnswer(qid, q, ctx, force, alt){
   A.lines.push({ kind:'answer', q, answer: err ? '[失敗: ' + err + ']' : text, sec }); scheduleLogSave();
   if (err) { const p = document.createElement('p'); p.className = 'err'; p.textContent = '回答生成に失敗: ' + err; box.appendChild(p); }
   else for (const ln of text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え') || ln.startsWith('別解')) p.className = 'a'; p.textContent = ln; box.appendChild(p); }
-  $('alog').scrollTop = $('alog').scrollHeight;
+  alogFilled(box);
 }
 
 /* ---------------- ログ ---------------- */
@@ -926,7 +1041,7 @@ function hhmmss(d){ return d.toTimeString().slice(0, 8); }
 function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : l.kind === 'manual' ? ('    [手動で質問] ' + l.text) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
 $('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileStem(cfg.course, (A.lines.find(l => l.t instanceof Date) || {}).t || new Date()) + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
 $('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
-$('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
+$('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; AV.unseen = 0; alogBadge(); A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
 
 /* ---------------- 別の端末から読めるようにする（秘密のgistへ送る） ----------------
    設定にGitHubトークン（gist権限のみ）を入れると、ログが変わるたび（10秒に1回まで）と停止時・画面が隠れた時に、
