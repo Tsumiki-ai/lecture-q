@@ -166,7 +166,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label>GitHubトークン（gist権限だけ。入れるとログを自分の秘密のgistへ送り続け、別の端末から読める）<input type="password" id="ghtoken" autocomplete="off" placeholder="ghp_..."></label>
     </div>
     <p class="hint" id="gistInfo">共有なし</p>
-    <label>レジュメ（PDF か テキスト。回答の根拠と、用語の聞き取りに使う）
+    <label>レジュメ・資料（PDF か テキスト。科目ごとに覚える。回答の根拠と、用語の聞き取りに使う）
       <input type="file" id="notesFile" accept=".pdf,.txt,.md,text/plain,application/pdf">
     </label>
     <label>レジュメの本文（貼り付けでも可）<textarea id="notes" placeholder="ここに貼るか、上でファイルを選ぶ"></textarea></label>
@@ -191,8 +191,33 @@ const LS_KEY = 'lq_settings_v1';
 /* ---------------- 設定 ---------------- */
 const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
-function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} }
+function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} notesMigrate(); }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
+
+/* ---------------- 科目ごとの資料・懇談 ----------------
+   資料（レジュメ）は科目名ごとに覚える（cfg.notesBy）。cfg.notes はいま選んでいる科目の資料。
+   科目名に「懇談」が入る時は、回答候補の役割を懇談用に替える（聞き取りと質問の判定は授業と同じ）。 */
+function isKondan(c){ return /懇談/.test(c == null ? (cfg.course || '') : c); }
+function notesKey(c){ return (c || '').trim(); }
+function notesMigrate(){ if (!cfg.notesBy || typeof cfg.notesBy !== 'object') cfg.notesBy = {}; const k = notesKey(cfg.course); if (cfg.notes && !cfg.notesBy[k]) cfg.notesBy[k] = { text: cfg.notes, name: cfg.notesName || '' }; }
+function notesPut(c, text, name){ const k = notesKey(c); if (text) cfg.notesBy[k] = { text: text, name: name || '' }; else delete cfg.notesBy[k]; }
+function switchCourse(name){    // 科目を替える。資料もその科目の物にする（覚えが無ければ今の資料のまま。授業と懇談をまたぐ時は持ち越さない）
+  const prev = cfg.course || ''; if (cfg.notes) notesPut(prev, cfg.notes, cfg.notesName);
+  cfg.course = name; const e = cfg.notesBy[notesKey(name)];
+  if (e) { cfg.notes = e.text || ''; cfg.notesName = e.name || ''; }
+  else if (isKondan(prev) !== isKondan(name)) { cfg.notes = ''; cfg.notesName = ''; }
+  if (isKondan(prev) !== isKondan(name)) cfg.audioIn = isKondan(name) ? 'pc' : 'mic';    // 懇談はPCの音、授業はマイクに戻す
+}
+const NF = { course:'', by:{} };    // 設定を開いている間だけの置き場（保存するまで cfg.notesBy には入れない）
+function courseChangedInForm(){    // 設定の中で科目名を替えたら、資料の欄をその科目の物に入れ替える
+  const c = notesKey($('course').value); if (c === NF.course) return;
+  NF.by[NF.course] = { text: $('notes').value, name: cfg.notesName || '' };
+  const e = NF.by[c] || cfg.notesBy[c];
+  if (e) { $('notes').value = e.text || ''; cfg.notesName = e.name || ''; }
+  else if (isKondan(NF.course) !== isKondan(c)) { $('notes').value = ''; cfg.notesName = ''; }
+  if (isKondan(NF.course) !== isKondan(c)) { const a = $('audioIn'); if (a) a.value = isKondan(c) ? 'pc' : 'mic'; }
+  NF.course = c; updateNotesInfo();
+}
 
 /* ---------------- 科目名の自動既定（授業開始の10分前〜10分後） ----------------
    2026年度の時間割（本人の履修・3Qと4Q、補講・筆記試験週を含む）。窓に入ったら設定の科目名をその科目にする。
@@ -209,14 +234,19 @@ const TIMETABLE = [
   { from:'2026-11-30', to:'2027-02-07', dow:6, hm:'16:50', name:'工業簿記' },
   { from:'2026-11-30', to:'2027-02-07', dow:0, hm:'13:00', name:'所得税法' },
 ];
-function buildCoursePick(){
+function fillCoursePick(){
   const sel = $('coursePick'); if (!sel) return;
   const names = Array.from(new Set(TIMETABLE.map(t => t.name)));
+  for (const k of Object.keys(cfg.notesBy || {})) if (k && names.indexOf(k) < 0) names.push(k);    // 資料を覚えている科目（懇談など）も選べる
   sel.innerHTML = '';
   for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); }
-  const other = document.createElement('option'); other.value = ''; other.textContent = 'その他（自由入力）'; sel.appendChild(other);
-  sel.addEventListener('change', () => { const v = sel.value; const inp = $('course'); if (!inp) return; if (v) inp.value = v; else { inp.focus(); inp.select(); } });
-  const inp = $('course'); if (inp) inp.addEventListener('input', syncCoursePick);
+  const other = document.createElement('option'); other.value = ''; other.textContent = 'その他（自由入力。名前に「懇談」を入れると懇談用になる）'; sel.appendChild(other);
+}
+function buildCoursePick(){
+  const sel = $('coursePick'); if (!sel) return;
+  fillCoursePick();
+  sel.addEventListener('change', () => { const v = sel.value; const inp = $('course'); if (!inp) return; if (v) { inp.value = v; courseChangedInForm(); } else { inp.focus(); inp.select(); } });
+  const inp = $('course'); if (inp) { inp.addEventListener('input', syncCoursePick); inp.addEventListener('change', courseChangedInForm); }
 }
 function syncCoursePick(){
   const sel = $('coursePick'); const inp = $('course'); if (!sel || !inp) return;
@@ -232,15 +262,16 @@ function autoCourse(){
     if (Math.abs(mins - start) > 10) continue;
     const key = ymd + ' ' + t.hm;
     if (cfg.courseAutoKey === key) return;    // この窓では適用済み
-    cfg.course = t.name; cfg.courseAutoKey = key; saveCfg();
+    if (A.running && isKondan()) return;    // 懇談の最中は、時間割で科目を替えない
+    switchCourse(t.name); cfg.courseAutoKey = key; saveCfg();
     const el = $('course'); if (el) { el.value = t.name; syncCoursePick(); }
     setStatus('科目名を時間割から「' + t.name + '」にした');
     return;
   }
 }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } syncCoursePick(); updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } NF.course = notesKey(cfg.course); NF.by = {}; fillCoursePick(); syncCoursePick(); updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } for (const k in NF.by) { if (k !== notesKey(cfg.course)) notesPut(k, (NF.by[k].text || '').trim(), NF.by[k].name); } notesPut(cfg.course, cfg.notes, cfg.notesName); }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -369,7 +400,7 @@ async function start(){
   if (isRt()) rtConnect();
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
   $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? geminiModel() : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
-  setStatus('聞き取り中（' + asrLabel() + (A.srcKind === 'pc' ? '・PCの音 ' : '・マイク ') + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (A.srcKind !== 'pc' && cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
+  setStatus((isKondan() ? '懇談・' : '') + '聞き取り中（' + asrLabel() + (A.srcKind === 'pc' ? '・PCの音 ' : '・マイク ') + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (A.srcKind !== 'pc' && cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）');
   holdWake();
   // 3秒ごとに入力の生存確認。コールバックが来ていなければ復帰処理（AudioContext再開→マイク取り直し）。wake lock も切れていれば取り直す
   clearInterval(A.diagTimer); let lastCount = 0;
@@ -492,7 +523,7 @@ function b64(buf){ const u8 = new Uint8Array(buf); let s = ''; for (let i = 0; i
 const SILENCE_MARKS = ['無音', '雑音', '聞き取れ', '音声なし', '発話なし', '該当なし', 'なし'];
 function asrPrompt(sec){
   const c = cfg.course || '大学院の授業';
-  let p = 'これは' + c + 'の講義の録音の一部（約' + Math.round(sec) + '秒）です。話された日本語を逐語的に文字起こししてください。\n- 要約・言い換え・補足はしない。言い淀みや相づちは省いてよいが、言葉は変えない。\n- 文ごとに改行する。疑問文の文末には「？」を付ける。\n- 無音・雑音・咳・物音だけで言葉が無いときは「[無音]」とだけ書く。聞き取れない部分は飛ばし、推測で埋めない。\n- 出力は文字起こしのテキストのみ。前置き・説明・記号は書かない。';
+  let p = (isKondan() ? 'これは、学生と監査法人の方のオンラインの懇談（' + c + '）の録音の一部（約' : 'これは' + c + 'の講義の録音の一部（約') + Math.round(sec) + '秒）です。話された日本語を逐語的に文字起こししてください。\n- 要約・言い換え・補足はしない。言い淀みや相づちは省いてよいが、言葉は変えない。\n- 文ごとに改行する。疑問文の文末には「？」を付ける。\n- 無音・雑音・咳・物音だけで言葉が無いときは「[無音]」とだけ書く。聞き取れない部分は飛ばし、推測で埋めない。\n- 出力は文字起こしのテキストのみ。前置き・説明・記号は書かない。';
   if (A.vocab && cfg.asrVocab === 'yes') p += '\n用語（この授業でよく出る語。聞こえた語の表記を揃えるためだけに使う。聞こえていない語をこの一覧から補ってはいけない）: ' + A.vocab;
   return p;
 }
@@ -771,26 +802,30 @@ async function recCheck(){ try { const all = await recAll(); if (all && all.leng
 $('btnRec').addEventListener('click', recSave);
 
 /* ---------------- 回答候補 ---------------- */
-const ROLE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n別解: 答えの候補が複数あるときだけ、もう1つの有力候補を1文（無ければ省く）\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n全体で7行以内・170字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
+const ROLE_LECTURE = (course) => 'あなたは大学院の授業「' + (course || '（科目名未指定）') + '」を受けている学生の補助者です。先生の発言のリアルタイム文字起こし（誤変換あり）が渡されます。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。学生への問いかけ、確認、修辞的な問い、一般知識の質問はすべて「質問」。迷ったら「質問」。\n「質問」なら、その場で口頭で答えるための案を必ず続ける。配付資料に無い内容でも一般知識で答える。時事（現職の人名・最新の数値など）も「分からない」「後で確認」と逃げず、知っている範囲で最も新しい答えを名指しし、「○年○月時点の知識」と一言添える:\n答え: 結論だけを1文（30字前後）\n補足: 根拠や用語を2行以内\n別解: 答えの候補が複数あるときだけ、もう1つの有力候補を1文（無ければ省く）\n根拠: 配付資料の該当箇所（ページ番号や見出し）。資料に無ければ「資料外（一般知識）」\n全体で7行以内・170字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／根拠）以外の装飾は付けない。';
+const ROLE_KONDAN = (course) => 'あなたは、就職活動中の学生（公認会計士試験の合格者）の補助者です。学生は今、監査法人の方とのオンラインの懇談「' + course + '」に出ています。相手の方の発言のリアルタイム文字起こし（誤変換あり）が渡されます。学生本人の声は入っていません。\n【本人の資料】に、学生の経歴、提出したES、用意してある答え、これまでに相手の法人から聞いた話、出さないと決めた話、まだ聞きたい事が入っています。\n1行目に判定を書く: 「判定: 質問」か「判定: 質問ではない」。相手が学生に尋ねている・確かめている・意見や希望を求めている発言は「質問」。相手が自分の説明の途中で言う確認（「〜なんですよね」「〜ですかね」「聞いたことありますかね」）も、学生が返事をする場面なので「質問」。迷ったら「質問」。\n「質問」なら、学生がその場で口に出す答えの案を必ず続ける:\n答え: 学生の言葉（です・ます）で1〜2文。資料の「決めてある言い方」や想定問答に当てはまる物があれば、その文を使う（長ければ要点の1〜2文に縮める）。資料に無い経験・数字・固有名詞を作らない。資料に答えが無い問いは、分かる範囲だけの短い返事にする。\n補足: 答える時の注意を1行（「案（本人の確認前）」の言い方を使った時は「案」と書く。資料の「出さない話」に触れそうな時はそれを書く。無ければ省く）\n聞き返し: 答えた後に学生から続けて聞くと良い問いを1つ。資料の「まだ答えが出ていない、聞きたい事」から、話の流れに合う物を選ぶ（無ければ省く）\n根拠: 資料のどの見出し・どの問いに基づくか。資料に無ければ「資料外」\n全体で7行以内・200字程度。文字起こしの誤りは文脈から補って解釈する。見出し語（判定／答え／補足／聞き返し／根拠）以外の装飾は付けない。';
+const FORCE_KONDAN = (q) => '【学生がタップして指名した発言（必ず答える）】\n' + q + '\n\n学生がこの発言を自分で選んで助けを求めている。質問かどうかの判定はしない。1行目は必ず「判定: 質問（指名）」と書く。指名された発言が学生への問いなら、2行目から 答え・補足・聞き返し・根拠 を書く。相手の方の説明（問いではない）なら、「答え:」に、その説明への学生の受け答えを1文（要点を確かめる返事）、「補足:」に、分かりにくい用語の説明を1〜2行、「聞き返し:」に、続けて聞くと良い問いを1つ書く。';
+const ROLE = (course) => isKondan(course) ? ROLE_KONDAN(course) : ROLE_LECTURE(course);
 // Claudeのモデルと思考オフの指定はモデルごとに違う（Haiku=disabled・Sonnet=between_tools。Opus/Fableはadaptiveしか無く3.5秒以上かかるので載せない）
 function geminiModel(){ return /^gemini/.test(cfg.asrModel) ? cfg.asrModel : 'gemini-3.5-flash'; }
 function claudeModel(){ return cfg.llm === 'sonnet' ? 'claude-sonnet-5-5' : 'claude-haiku-5-5'; }
 function claudeThinking(){ return cfg.llm === 'sonnet' ? { type:'between_tools' } : { type:'disabled' }; }
 async function askAnswer(qid, q, ctx, force, alt){
-  const head = '【直前の講義の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n';
-  const user = head + (force
+  const kd = isKondan();
+  const head = (kd ? '【直前の相手の方の発言の文字起こし（古い→新しい）】\n' : '【直前の講義の文字起こし（古い→新しい）】\n') + (ctx || '（なし）') + '\n\n';
+  const user = head + (force && kd ? FORCE_KONDAN(q) : force
     ? '【学生がタップして指名した発言（必ず答える）】\n' + q + '\n\n学生がこの発言を自分で選んで回答を求めている。質問かどうかの判定はしない。1行目は必ず「判定: 質問（指名）」と書き、2行目から答え・補足・根拠を必ず書く。指名された文は、ほとんどの場合、先生が学生に投げた問い（例:「どうしたらいいですか？」「なに？」）。答えるのは「学生が今何をすべきか」や授業の進め方ではなく、その問いの中身、つまり先生が学生に言わせたい答え。直前の文字起こしと検知した質問の流れから、先生が示した状況・制約・ダメ出し（例: ○○は通らない）を前提に、問いを1文で具体化してから答える。問いの推定は補足の冒頭に「問いの推定: …」と1行で示す。誤変換が多くても、文脈から最も筋の通る解釈を1つ選んで答え、「分からない」「資料を参照」では終わらない。'
     : '【検知した発言（これについて判定と回答案）】\n' + q)
-    + (alt ? '\n\n【前回の答え（先生の求める答えではなかった）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。それ以外の候補を「答え」と「別解」に1つずつ書く。' : '');
+    + (alt ? (kd ? '\n\n【前回の答えの案（学生は別の言い方か別の中身を求めている）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。資料の範囲で、別の言い方か別の候補を「答え」に書く。' : '\n\n【前回の答え（先生の求める答えではなかった）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。それ以外の候補を「答え」と「別解」に1つずつ書く。') : '');
   const t0 = Date.now(); let text = '', err = '';
   try {
     if (cfg.llm === 'gemini') {
-      let sys = ROLE(cfg.course); if (cfg.notes) sys += '\n\n【配付資料（レジュメ）】\n' + cfg.notes;
+      let sys = ROLE(cfg.course); if (cfg.notes) sys += (kd ? '\n\n【本人の資料】\n' : '\n\n【配付資料（レジュメ）】\n') + cfg.notes;
       const body = { systemInstruction:{ parts:[{ text: sys }] }, contents:[{ role:'user', parts:[{ text: user }] }], generationConfig:{ temperature:0.2, maxOutputTokens:400, thinkingConfig:{ thinkingBudget:0 } } };
       const j = await geminiJson(geminiModel(), body); const c = (j.candidates || [])[0]; text = c ? ((c.content || {}).parts || []).map(p => p.text || '').join('').trim() : '';
     } else {
       if (!cfg.akey) throw new Error('Anthropicのキーが無い（設定）');
-      const system = [{ type:'text', text: ROLE(cfg.course) }]; if (cfg.notes) system.push({ type:'text', text:'【配付資料（レジュメ）】\n' + cfg.notes, cache_control:{ type:'ephemeral' } });
+      const system = [{ type:'text', text: ROLE(cfg.course) }]; if (cfg.notes) system.push({ type:'text', text:(kd ? '【本人の資料】\n' : '【配付資料（レジュメ）】\n') + cfg.notes, cache_control:{ type:'ephemeral' } });
       let body = { model: claudeModel(), max_tokens:400, system, messages:[{ role:'user', content: user }], thinking: claudeThinking() };
       for (let attempt = 0; attempt < 3; attempt++) {
         const r = await fetch(ANTHROPIC_URL, { method:'POST', headers:{ 'content-type':'application/json', 'x-api-key': cfg.akey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify(body) });
