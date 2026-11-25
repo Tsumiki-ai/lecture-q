@@ -160,7 +160,7 @@ body.quiet .qitem.weak{color:var(--muted)}
   <form method="dialog" id="settingsForm">
     <h3>設定</h3>
     <div class="row">
-      <label>科目名（時間割から選ぶ）<select id="coursePick"></select></label>
+      <label>科目名（懇談・時間割から選ぶ）<select id="coursePick"></select></label>
       <label>科目名（自由入力。選ぶとここに入る）<input type="text" id="course" placeholder="内部統制論"></label>
     </div>
     <div class="row">
@@ -262,8 +262,9 @@ const TIMETABLE = [
 ];
 function fillCoursePick(){
   const sel = $('coursePick'); if (!sel) return;
-  const names = Array.from(new Set(TIMETABLE.map(t => t.name)));
-  for (const k of Object.keys(cfg.notesBy || {})) if (k && names.indexOf(k) < 0) names.push(k);    // 資料を覚えている科目（懇談など）も選べる
+  const preset = ['EY懇談'];    // 懇談用の科目。最初から並べる（資料はこのブラウザの中にだけ置く。ページには入れない）
+  const names = preset.concat(Array.from(new Set(TIMETABLE.map(t => t.name))).filter(n => preset.indexOf(n) < 0));
+  for (const k of Object.keys(cfg.notesBy || {})) if (k && names.indexOf(k) < 0) names.push(k);    // 資料を覚えている科目（ほかの懇談など）も選べる
   sel.innerHTML = '';
   for (const n of names) { const o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); }
   const other = document.createElement('option'); other.value = ''; other.textContent = 'その他（自由入力。名前に「懇談」を入れると懇談用になる）'; sel.appendChild(other);
