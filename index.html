@@ -108,6 +108,11 @@ body.quiet .qitem.weak{color:var(--muted)}
 #kbd .kr{display:flex;gap:4px;flex:1 1 0;min-height:0}
 #kbd button{flex:1 1 0;min-width:0;padding:0;font-size:18px;white-space:nowrap;overflow:hidden;touch-action:manipulation;-webkit-user-select:none;user-select:none}
 #kbd button.wide{flex:2 1 0;font-size:14px} #kbd button.sp{flex:3 1 0} #kbd button.on{background:var(--accent);color:#00131c;border-color:transparent} #kbd button.off{opacity:.35}
+/* 次に来そうな問い（懇談の時だけ）: 回答候補の箱の下に小さく出す。押すと、その問いの答えの案を足す */
+.ans .fuh{font-size:11px;color:var(--muted);margin:8px 0 0}
+.ans .fu{display:block;width:100%;text-align:left;font-size:13px;line-height:1.35;padding:6px 8px;margin:4px 0 0;background:transparent;color:var(--fg);border:1px dashed var(--line);border-radius:6px;white-space:normal}
+.ans .fu.used{opacity:.4}
+.ans.pre{border-left-style:dashed}
 </style>
 </head>
 <body>
@@ -175,6 +180,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
       <label><span>文字起こしに用語を渡す</span><select id="asrVocab"><option value="no" selected>渡さない（素の文字起こし）</option><option value="yes">レジュメの用語を渡す（無音時に捏造しやすい）</option></select></label>
       <label><span>話している途中から文字を出す</span><select id="live"><option value="yes" selected>出す（Gemini のリアルタイム。確定の文は今までどおり）</option><option value="no">出さない</option></select></label>
+      <label><span>次に来そうな問いを出す</span><select id="follow"><option value="yes" selected>出す（懇談の時だけ。答えの下に2つまで）</option><option value="no">出さない</option></select></label>
       <label><span>録音も残す</span><select id="rec"><option value="yes" selected>残す（停止後に「録音を保存」で書き出す）</option><option value="no">残さない</option></select></label>
     </div>
     <div class="row">
@@ -204,7 +210,7 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', live:'yes', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', live:'yes', follow:'yes', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
 function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} notesMigrate(); }
 function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
@@ -290,8 +296,8 @@ function autoCourse(){
   }
 }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','live','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } NF.course = notesKey(cfg.course); NF.by = {}; NF.dirty = false; fillCoursePick(); syncCoursePick(); updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','live','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } for (const k in NF.by) { if (k !== notesKey(cfg.course)) notesPut(k, (NF.by[k].text || '').trim(), NF.by[k].name); } notesPut(cfg.course, cfg.notes, cfg.notesName); }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } NF.course = notesKey(cfg.course); NF.by = {}; NF.dirty = false; fillCoursePick(); syncCoursePick(); updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } for (const k in NF.by) { if (k !== notesKey(cfg.course)) notesPut(k, (NF.by[k].text || '').trim(), NF.by[k].name); } notesPut(cfg.course, cfg.notes, cfg.notesName); }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -765,17 +771,17 @@ function manualAsk(p){
   const part = p.classList.contains('partial');
   forceAsk(tx, p.dataset.ts || hhmmss(new Date()), undefined, part ? '👆（途中の文） ' : undefined, part);
 }
-function forceAsk(tx, ts, alt, mark, live){
+function forceAsk(tx, ts, alt, mark, live, extra){
   mark = mark || '👆 ';
   if (cfg.llm === 'off') { setStatus('回答候補がオフ。設定で提供元を選ぶ'); return; }
   const qid = ++A.qid;
   // 文脈はその文より前の直近10文
   const idx = A.recent.findIndex(r => r.endsWith(' ' + tx)); const before = idx >= 0 ? A.recent.slice(0, idx) : (live ? A.recent.slice() : A.recent.slice(0, -1));
   const qs = A.lines.filter(l => ((l.kind === 'seg' && l.level) || l.kind === 'manual') && l.text !== tx).slice(-5).map(l => '[' + (l.t instanceof Date ? hhmmss(l.t) : '') + '] ' + l.text).join('\n');
-  const ctx = before.slice(-24).join('\n') + (qs ? '\n\n【少し前に検知した質問（古い→新しい）。指名された文はこの流れの続き】\n' + qs : '');
+  const ctx = before.slice(-24).join('\n') + (qs ? '\n\n【少し前に検知した質問（古い→新しい）。指名された文はこの流れの続き】\n' + qs : '') + (extra ? '\n\n' + extra : '');
   const q = document.createElement('p'); q.className = 'qitem'; q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = mark + tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
   A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
-  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + mark + (alt ? '別の答え: ' : '') + tx; a.dataset.mine = '1'; $('alog').appendChild(a); alogAdded(a, true);
+  const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + mark + (alt ? '別の答え: ' : '') + tx; a.dataset.mine = '1'; if (extra) { a.dataset.mark = mark; a.classList.add('pre'); } $('alog').appendChild(a); alogAdded(a, true);    // 先回りの箱は、答えが入った後も印（↪）と破線で見分けられるようにする
   A.lines.push({ kind:'manual', t:new Date(), text: tx }); scheduleLogSave();
   askAnswer(qid, tx, ctx, true, alt);
 }
@@ -899,6 +905,7 @@ window.addEventListener('blur', kbdRepStop);
 window.addEventListener('resize', () => { if (KB.open) kbdSize(); });
 $('qlog').addEventListener('click', (e) => { const p = e.target.closest('.qitem'); if (p && p.dataset.text) forceAsk(p.dataset.text, p.dataset.ts || hhmmss(new Date())); });
 $('alog').addEventListener('click', (e) => {
+  const fu = e.target.closest('.fu'); if (fu) { followAsk(fu); return; }    // 「次に来そうな問い」を押した時（箱そのものを押した扱いにはしない）
   const b = e.target.closest('.ans'); if (!b || !b.dataset.text || b.querySelector('.thinking')) return;
   const judged = Array.from(b.querySelectorAll('.judge')).some(p => /質問ではない/.test(p.textContent)); const failed = !!b.querySelector('.err');
   if (judged || failed) { forceAsk(b.dataset.text, b.dataset.ts || hhmmss(new Date())); return; }
@@ -1029,11 +1036,62 @@ async function askAnswer(qid, q, ctx, force, alt){
     }
   } catch (e) { err = e.message; }
   const sec = ((Date.now() - t0) / 1000).toFixed(1);
-  const box = $('ans' + qid); if (!box) return; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + q + '　（' + sec + '秒）';
+  const box = $('ans' + qid); if (!box) return; box.innerHTML = '<p class="q"></p>'; box.querySelector('.q').textContent = 'Q: ' + (box.dataset.mark || '') + q + '　（' + sec + '秒）';
   A.lines.push({ kind:'answer', q, answer: err ? '[失敗: ' + err + ']' : text, sec }); scheduleLogSave();
   if (err) { const p = document.createElement('p'); p.className = 'err'; p.textContent = '回答生成に失敗: ' + err; box.appendChild(p); }
   else for (const ln of text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え') || ln.startsWith('別解')) p.className = 'a'; p.textContent = ln; box.appendChild(p); }
   alogFilled(box);
+  if (!err) followSuggest(box, q, ctx, text);
+}
+
+/* ---------------- 次に来そうな問い（懇談の時だけ） ----------------
+   回答候補が出た後に、同じ資料で「この答えの後に相手の方が続けて聞きそうな問い」を2つまで取りに行き、箱の下に小さく出す。
+   押すと、その問いの答えの案を回答候補に足す（印は ↪）。答えそのものの速さは変えない（別の呼び出し）。授業の時は何もしない。 */
+function followOn(){ return isKondan() && cfg.follow !== 'no' && cfg.llm !== 'off'; }
+function followParse(out, q){    // 「問い: …」の行だけを2つまで拾う
+  const seen = new Set(); const res = [];
+  for (let l of String(out || '').split('\n')) {
+    const m = l.trim().match(/^[-・\d.．)）\s]*問い\s*\d*\s*[:：]\s*(.+)$/); if (!m) continue;
+    const s = m[1].trim().replace(/^[「『]/, '').replace(/[」』]$/, '');
+    if (!s || s.length > 60 || s === q || seen.has(s)) continue;
+    seen.add(s); res.push(s); if (res.length >= 2) break;
+  }
+  return res;
+}
+async function followSuggest(box, q, ctx, text){
+  if (!followOn() || !text || /^判定[:：]\s*質問ではない/m.test(text)) return;
+  const ans = text.split('\n').filter(l => /^(答え|別解)/.test(l.trim())).join('\n'); if (!ans) return;
+  const asked = A.lines.filter(l => ((l.kind === 'seg' && l.level) || l.kind === 'manual') && l.text !== q).slice(-8).map(l => '- ' + l.text).join('\n');
+  const user = '【直前の相手の方の発言の文字起こし（古い→新しい）】\n' + (ctx || '（なし）') + '\n\n【相手の方の問い】\n' + q + '\n\n【学生が用意した答えの案】\n' + ans
+    + (asked ? '\n\n【今日すでに出た問い】\n' + asked : '')
+    + '\n\n【別の依頼（ここでは、判定・答え・補足・聞き返し・根拠は書かない）】\n学生が上の答えを言った後に、相手の方が続けて聞きそうな問いを2つ挙げる。\n- 1つ目は、【本人の資料】の想定問答にある問いの中から、この答えの深掘りとして一番来やすい物を選び、資料の問いの文のまま書く。当てはまる物が無ければ、2つとも下の形で書く。\n- 2つ目は、この答えの中の言葉（理由・固有名詞・数字）を掘り下げる問いを、相手の方の話し言葉で書く。\n- 上の「相手の方の問い」と同じ問い、今日すでに出た問いは書かない。\n- 出力は2行だけ。各行は「問い: 」で始め、1行35字以内。前置き・番号・説明は書かない。';
+  let out = '';
+  try {
+    if (cfg.llm === 'gemini') {
+      let sys = ROLE(cfg.course); if (cfg.notes) sys += '\n\n【本人の資料】\n' + cfg.notes;
+      const body = { systemInstruction:{ parts:[{ text: sys }] }, contents:[{ role:'user', parts:[{ text: user }] }], generationConfig:{ temperature:0.2, maxOutputTokens:150, thinkingConfig:{ thinkingBudget:0 } } };
+      const j = await geminiJson(geminiModel(), body); const c = (j.candidates || [])[0]; out = c ? ((c.content || {}).parts || []).map(p => p.text || '').join('').trim() : '';
+    } else {
+      if (!cfg.akey) return;
+      // 答えの呼び出しと同じ並び（役割→資料）にして、資料をキャッシュから読ませる
+      const system = [{ type:'text', text: ROLE(cfg.course) }]; if (cfg.notes) system.push({ type:'text', text:'【本人の資料】\n' + cfg.notes, cache_control:{ type:'ephemeral' } });
+      const body = { model: claudeModel(), max_tokens:150, system, messages:[{ role:'user', content: user }], thinking: claudeThinking() };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const r = await fetch(ANTHROPIC_URL, { method:'POST', headers:{ 'content-type':'application/json', 'x-api-key': cfg.akey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify(body) });
+        if (!r.ok) { if (r.status === 400 && body.thinking) { delete body.thinking; body.max_tokens = 600; continue; } return; }
+        const j = await r.json(); out = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim(); break;
+      }
+    }
+  } catch (e) { return; }    // 候補が取れなくても、答えはそのまま（何も出さない）
+  const qs = followParse(out, q); if (!qs.length || !box.isConnected) return;
+  const h = document.createElement('p'); h.className = 'fuh'; h.textContent = '次に来そうな問い（押すと答えの案を足す）'; box.appendChild(h);
+  for (const s of qs) { const b = document.createElement('button'); b.type = 'button'; b.className = 'fu'; b.dataset.text = s; b.textContent = '↪ ' + s; box.appendChild(b); }
+}
+function followAsk(f){
+  if (f.classList.contains('used')) return; f.classList.add('used');
+  const box = f.closest('.ans'); const prevA = box ? Array.from(box.querySelectorAll('.a')).map(p => p.textContent).join('\n') : '';
+  const extra = '【この問いの前のやり取り】\n相手の方の問い: ' + (box ? box.dataset.text : '') + '\n学生の答えの案: ' + prevA + '\n（指名された文は、相手の方が次に聞きそうな問いを先回りした物で、まだ実際には聞かれていない。聞かれた時にそのまま言える答えの案を用意する）';
+  forceAsk(f.dataset.text, hhmmss(new Date()), undefined, '↪ ', true, extra);
 }
 
 /* ---------------- ログ ---------------- */
