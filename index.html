@@ -89,6 +89,11 @@ textarea{min-height:90px;resize:vertical}
 .hint{font-size:12px;color:var(--muted);margin:0}
 .notice{font-size:13px;color:var(--muted);padding:10px 12px}
 .sysnote{font-size:13px;color:var(--muted);margin:0 0 8px;padding-left:6px}
+/* 警告の帯（PCの音の出力先がずれている時）。「開始」を押した後に、見出しの下へ出す */
+#warnBar{display:flex;gap:10px;align-items:center;padding:8px 16px;background:var(--q);color:var(--q-fg);font-size:14px;font-weight:600}
+#warnBar[hidden]{display:none}
+#warnBar span{flex:1;min-width:0}
+#warnBar button{padding:4px 10px;font-size:13px}
 @media (prefers-reduced-motion: no-preference){ body.flash{animation:flash 1.2s ease-out} @keyframes flash{0%{background:#3a3000}100%{background:var(--bg)}} }
 /* 目立たない表示: 入力レベルのバーを消し、検知時の画面の点滅を止め、黄色の帯を細い下線に落とす */
 body.quiet #lvl{display:none}
@@ -124,6 +129,7 @@ body.quiet .qitem.weak{color:var(--muted)}
   <button id="btnNotesReload" hidden title="つないである資料のファイルを読み直す（Edge が、読んでいいかを聞く）">📄 資料を読み直す</button>
   <button id="btnStart" class="primary">開始</button>
 </header>
+<div id="warnBar" hidden role="alert"><span id="warnText"></span><button type="button" id="warnClose">閉じる</button></div>
 <main>
   <section class="pane" id="tPane" aria-label="文字起こし">
     <h2>文字起こし</h2>
@@ -440,6 +446,7 @@ async function start(){
   $('btnStart').textContent = '停止'; $('btnStart').className = 'stop';
   $('ansHead').textContent = '回答候補' + (cfg.llm === 'off' ? '（オフ）' : '（' + (cfg.llm === 'gemini' ? geminiModel() : claudeModel()) + (cfg.notes ? '・レジュメ有' : '') + '）');
   setStatus((isKondan() ? '懇談・' : '') + '聞き取り中（' + asrLabel() + (A.srcKind === 'pc' ? '・PCの音 ' : '・マイク ') + Math.round(A.ctx.sampleRate / 1000) + 'kHz' + (A.srcKind !== 'pc' && cfg.rawMic !== 'auto' ? '・処理オフ' : '') + '）' + (isKondan() && !cfg.notes ? ' ⚠ 懇談の資料が入っていない（設定で読み込む）' : '') + linkMsg);
+  if (A.srcKind === 'pc') poCheck(); else warnHide();    // PCの音の時: 出力先がずれていれば警告を出す
   holdWake();
   // 3秒ごとに入力の生存確認。コールバックが来ていなければ復帰処理（AudioContext再開→マイク取り直し）。wake lock も切れていれば取り直す
   clearInterval(A.diagTimer); let lastCount = 0;
@@ -455,6 +462,34 @@ async function start(){
       A.rawPeak = 0;
     }
   }, 3000);
+}
+/* ---------------- PCの音: 出力先のずれの警告 ----------------
+   PCの音として拾えるのは、Windows の「既定の出力先」に流れる音だけ。Teams などの声が別の出力先（通話用の出力先・イヤホンなど）に出ていると、何も入らない。
+   PCの音で「開始」を押した時に、既定の出力先と通話用の出力先を見て、違っていれば上に警告の帯を出す（同じなら何も出さない）。
+   出力先の名前はマイクの許可がある時だけ見える。無ければ1回だけ許可をもらう（音は録らない）。許可が出なければ、何もしない。 */
+function poName(s){ return String(s || '').replace(/^.*? - /, '').trim(); }    // 「既定 - 」「通信 - 」の頭を外す
+async function poRead(){    // 既定の出力先と通話用の出力先。名前が見えない時は null
+  try {
+    const md = navigator.mediaDevices; if (!md || !md.enumerateDevices) return null;
+    let outs = (await md.enumerateDevices()).filter(x => x.kind === 'audiooutput'); let d = outs.find(o => o.deviceId === 'default');
+    if (!d || !d.label) {
+      sysNote('出力先がずれていないかを確かめるために、マイクの許可を1回だけもらう（音は録らない）');
+      try { const s = await md.getUserMedia({ audio:true }); s.getTracks().forEach(tk => tk.stop()); } catch (e) { return null; }
+      outs = (await md.enumerateDevices()).filter(x => x.kind === 'audiooutput'); d = outs.find(o => o.deviceId === 'default');
+    }
+    if (!d || !d.label) return null;
+    const c = outs.find(o => o.deviceId === 'communications');
+    const def = poName(d.label), com = c && c.label ? poName(c.label) : '';
+    return { def, com, same: !com || (d.groupId && c.groupId ? d.groupId === c.groupId : def === com) };
+  } catch (e) { return null; }
+}
+function warnShow(text){ $('warnText').textContent = text; $('warnBar').hidden = false; }
+function warnHide(){ $('warnBar').hidden = true; }
+$('warnClose').addEventListener('click', warnHide);
+async function poCheck(){
+  warnHide();
+  const o = await poRead(); if (!o || o.same || !A.running || A.srcKind !== 'pc') return;
+  warnShow('⚠ Windows の出力先を「' + o.com + '」に変えて、開始し直してください。');
 }
 /* ---------------- スリープ・中断からの復帰 ----------------
    iPadがスリープ／自動ロック／別アプリの音で中断すると、AudioContext が interrupted/suspended になり、
