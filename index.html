@@ -119,6 +119,11 @@ body.quiet .qitem.weak{color:var(--muted)}
 .ans .fu{display:block;width:100%;text-align:left;font-size:13px;line-height:1.35;padding:6px 8px;margin:4px 0 0;background:transparent;color:var(--fg);border:1px dashed var(--line);border-radius:6px;white-space:normal}
 .ans .fu.used{opacity:.4}
 .ans.pre{border-left-style:dashed}
+#quick{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px 2px}
+#quick[hidden]{display:none}
+#qPane[hidden]{display:none}
+#quick button{font-size:13px;line-height:1.2;padding:6px 10px;border-radius:14px;background:transparent;color:var(--fg);border:1px solid var(--ans)}
+.ans.quick{border-left-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -143,6 +148,7 @@ body.quiet .qitem.weak{color:var(--muted)}
     </div>
     <div class="pane" id="aPane" aria-label="回答候補">
       <h2 id="ansHead">回答候補</h2>
+      <div id="quick" hidden></div>
       <div id="alog" class="scroll"></div>
       <button id="alogNew" type="button" hidden>↓ 新しい回答</button>
     </div>
@@ -183,6 +189,7 @@ body.quiet .qitem.weak{color:var(--muted)}
     <div class="row">
       <label>無音と見なす秒数<select id="silence"><option value="0.5">0.5</option><option value="0.6" selected>0.6</option><option value="0.8">0.8</option><option value="1.0">1.0</option></select></label>
       <label><span>疑い（橙）にも回答候補</span><select id="answerWeak"><option value="yes" selected>出す</option><option value="no">出さない</option></select></label>
+      <label><span>検知した質問の欄</span><select id="qShow"><option value="show" selected>出す</option><option value="kondan">懇談の時は隠す</option><option value="hide">いつも隠す</option></select></label>
       <label><span>音の入力</span><select id="audioIn"><option value="mic" selected>マイク（教室）</option><option value="pc">PCの音（Zoomなど。WindowsのChromeかEdgeだけ）</option></select></label>
       <label><span>マイクの音声処理</span><select id="rawMic"><option value="raw" selected>切る（遠くの声向け）</option><option value="auto">端末に任せる</option></select></label>
       <label><span>表示</span><select id="quiet"><option value="no" selected>通常</option><option value="yes">目立たない（バー非表示・点滅なし・黄色は下線だけ）</option></select></label>
@@ -224,10 +231,10 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', live:'yes', follow:'yes', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', qShow:'show', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', live:'yes', follow:'yes', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
-function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} notesMigrate(); }
-function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} }
+function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} notesMigrate(); try { quickRender(); } catch (e) {} try { qPaneApply(); } catch (e) {} }
+function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} try { quickRender(); } catch (e) {} try { qPaneApply(); } catch (e) {} }
 
 /* ---------------- 科目ごとの資料・懇談 ----------------
    資料（レジュメ）は科目名ごとに覚える（cfg.notesBy）。cfg.notes はいま選んでいる科目の資料。
@@ -311,8 +318,8 @@ function autoCourse(){
   }
 }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } NF.course = notesKey(cfg.course); NF.by = {}; NF.dirty = false; fillCoursePick(); syncCoursePick(); updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } for (const k in NF.by) { if (k !== notesKey(cfg.course)) notesPut(k, (NF.by[k].text || '').trim(), NF.by[k].name); } notesPut(cfg.course, cfg.notes, cfg.notesName); }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','qShow','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } NF.course = notesKey(cfg.course); NF.by = {}; NF.dirty = false; fillCoursePick(); syncCoursePick(); updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','qShow','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } for (const k in NF.by) { if (k !== notesKey(cfg.course)) notesPut(k, (NF.by[k].text || '').trim(), NF.by[k].name); } notesPut(cfg.course, cfg.notes, cfg.notesName); }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -1089,6 +1096,32 @@ async function askAnswer(qid, q, ctx, force, alt){
   else for (const ln of text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); if (ln.startsWith('判定')) p.className = 'judge'; else if (ln.startsWith('答え') || ln.startsWith('別解')) p.className = 'a'; p.textContent = ln; box.appendChild(p); }
   alogFilled(box);
   if (!err) followSuggest(box, q, ctx, text);
+}
+
+/* 検知した質問の欄を出すか隠すか（設定）。隠しても、聞き取りと質問の判定は同じように動く（欄の中身は裏で作られている）。 */
+function qPaneApply(){ const el = document.getElementById('qPane'); if (!el) return; el.hidden = cfg.qShow === 'hide' || (cfg.qShow === 'kondan' && isKondan()); }
+
+/* ---------------- 定番の答えのボタン（懇談の時だけ・AI を通さない） ----------------
+   資料の中の「【ボタン】名前」の行から「【ボタン終わり】」の行までを1つの段として読み、回答候補の上にボタンを並べる。
+   押すと、その段の文をそのまま回答候補に足す。通信はしない（聞き取り・回線・AI のどれが止まっていても出る）。
+   中身は資料にだけ置く（このページには書かない）。授業の時と、段が無い資料の時は、何も出さない。 */
+function quickParse(notes){
+  const res = []; const re = /^[ \t\u3000]*【ボタン】[ \t\u3000]*(.+?)[ \t\u3000]*\r?\n([\s\S]*?)\r?\n[ \t\u3000]*【ボタン終わり】/gm; let m;
+  while ((m = re.exec(String(notes || ''))) && res.length < 12) { const name = m[1].trim().slice(0, 14); const text = m[2].replace(/\r/g, '').trim(); if (name && text) res.push({ name, text }); }
+  return res;
+}
+function quickRender(){
+  const el = document.getElementById('quick'); if (!el) return;
+  const items = isKondan() ? quickParse(cfg.notes) : [];
+  el.textContent = ''; el.hidden = !items.length;
+  for (const it of items) { const b = document.createElement('button'); b.type = 'button'; b.textContent = it.name; b.addEventListener('click', () => quickShow(it)); el.appendChild(b); }
+}
+function quickShow(it){
+  const a = document.createElement('div'); a.className = 'ans quick'; a.dataset.mine = '1';
+  const q = document.createElement('p'); q.className = 'q'; q.textContent = 'Q: ▶ ' + it.name + '　（資料の文）'; a.appendChild(q);
+  for (const ln of it.text.split('\n')) { if (!ln.trim()) continue; const p = document.createElement('p'); p.className = 'a'; p.textContent = ln; a.appendChild(p); }
+  $('alog').appendChild(a); alogAdded(a, true);
+  try { A.lines.push({ kind:'answer', q:'［ボタン］' + it.name, answer: it.text, sec:'0.0' }); scheduleLogSave(); } catch (e) {}
 }
 
 /* ---------------- 次に来そうな問い（懇談の時だけ） ----------------
