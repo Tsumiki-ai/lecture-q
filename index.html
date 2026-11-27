@@ -124,6 +124,15 @@ body.quiet .qitem.weak{color:var(--muted)}
 #qPane[hidden]{display:none}
 #quick button{font-size:13px;line-height:1.2;padding:6px 10px;border-radius:14px;background:transparent;color:var(--fg);border:1px solid var(--ans)}
 .ans.quick{border-left-color:var(--accent)}
+/* 聞きたい事（懇談の時だけ）: 資料の「聞きたい事」の一覧と、裏で作った深掘りの問い。済は薄い字に線。タップで未と済を入れ替える */
+#wPane{flex:1 1 0} #wPane[hidden]{display:none}
+#wlog .wg{font-size:11px;color:var(--muted);margin:12px 0 4px;letter-spacing:.04em} #wlog .wg:first-child{margin-top:0}
+#wlog .want{font-size:14.5px;margin:0;padding:6px 2px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:8px;align-items:baseline;-webkit-tap-highlight-color:transparent}
+#wlog .want .t{flex:1;min-width:0}
+#wlog .want.done .t{color:var(--muted);text-decoration:line-through;text-decoration-color:rgba(139,150,163,.6)}
+#wlog .want .ev{font-size:11px;color:var(--ans);white-space:nowrap;font-variant-numeric:tabular-nums}
+#wlog .want.deep{border-left:2px dashed var(--ans);padding-left:8px}
+#wlog .wnote{font-size:11px;color:var(--muted);margin:8px 0 0}
 </style>
 </head>
 <body>
@@ -145,6 +154,10 @@ body.quiet .qitem.weak{color:var(--muted)}
     <div class="pane foldable" id="qPane" aria-label="検知した質問">
       <h2 id="qHead" role="button" tabindex="0" aria-expanded="true" aria-controls="qlog">検知した質問<span class="fh"></span></h2>
       <div id="qlog" class="scroll"></div>
+    </div>
+    <div class="pane foldable fold" id="wPane" aria-label="聞きたい事" hidden>
+      <h2 id="wHead" role="button" tabindex="0" aria-expanded="false" aria-controls="wlog">聞きたい事<span class="fh"></span></h2>
+      <div id="wlog" class="scroll"></div>
     </div>
     <div class="pane" id="aPane" aria-label="回答候補">
       <h2 id="ansHead">回答候補</h2>
@@ -196,6 +209,7 @@ body.quiet .qitem.weak{color:var(--muted)}
       <label><span>文字起こしに用語を渡す</span><select id="asrVocab"><option value="no" selected>渡さない（素の文字起こし）</option><option value="yes">レジュメの用語を渡す（無音時に捏造しやすい）</option></select></label>
       <label><span>話している途中から文字を出す</span><select id="live"><option value="yes" selected>出す（Gemini のリアルタイム。確定の文は今までどおり）</option><option value="no">出さない</option></select></label>
       <label><span>次に来そうな問いを出す</span><select id="follow"><option value="yes" selected>出す（懇談の時だけ。答えの下に2つまで）</option><option value="no">出さない</option></select></label>
+      <label><span>聞きたい事と深掘りの問い</span><select id="want"><option value="opus" selected>出す（懇談の時だけ。深掘りは裏で Claude Opus が作る）</option><option value="sonnet">出す（深掘りは Claude Sonnet。安い）</option><option value="list">一覧だけ出す（裏の呼び出しをしない）</option><option value="no">出さない</option></select></label>
       <label><span>録音も残す</span><select id="rec"><option value="yes" selected>残す（停止後に「録音を保存」で書き出す）</option><option value="no">残さない</option></select></label>
     </div>
     <div class="row">
@@ -231,10 +245,10 @@ const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const LS_KEY = 'lq_settings_v1';
 
 /* ---------------- 設定 ---------------- */
-const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', qShow:'show', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', live:'yes', follow:'yes', ghtoken:'', notes:'', notesName:'' };
+const defaults = { course:'', gkey:'', akey:'', asrModel:'gemini-3.5-flash', okey:'', llm:'sonnet', silence:'0.6', answerWeak:'yes', qShow:'show', rawMic:'raw', audioIn:'mic', quiet:'no', rec:'yes', asrVocab:'no', live:'yes', follow:'yes', want:'opus', ghtoken:'', notes:'', notesName:'' };
 let cfg = Object.assign({}, defaults);
-function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} notesMigrate(); try { quickRender(); } catch (e) {} try { qPaneApply(); } catch (e) {} }
-function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} try { quickRender(); } catch (e) {} try { qPaneApply(); } catch (e) {} }
+function loadCfg(){ try { const s = localStorage.getItem(LS_KEY); if (s) cfg = Object.assign({}, defaults, JSON.parse(s)); } catch (e) {} notesMigrate(); try { quickRender(); } catch (e) {} try { qPaneApply(); } catch (e) {} try { wantSync(); } catch (e) {} }
+function saveCfg(){ try { localStorage.setItem(LS_KEY, JSON.stringify(cfg)); } catch (e) {} try { quickRender(); } catch (e) {} try { qPaneApply(); } catch (e) {} try { wantSync(); } catch (e) {} }
 
 /* ---------------- 科目ごとの資料・懇談 ----------------
    資料（レジュメ）は科目名ごとに覚える（cfg.notesBy）。cfg.notes はいま選んでいる科目の資料。
@@ -318,8 +332,8 @@ function autoCourse(){
   }
 }
 function applyQuiet(){ document.body.classList.toggle('quiet', cfg.quiet === 'yes'); }
-function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','qShow','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } NF.course = notesKey(cfg.course); NF.by = {}; NF.dirty = false; fillCoursePick(); syncCoursePick(); updateNotesInfo(); }
-function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','qShow','rawMic','audioIn','quiet','rec','asrVocab','live','follow','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } for (const k in NF.by) { if (k !== notesKey(cfg.course)) notesPut(k, (NF.by[k].text || '').trim(), NF.by[k].name); } notesPut(cfg.course, cfg.notes, cfg.notesName); }
+function cfgToForm(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','qShow','rawMic','audioIn','quiet','rec','asrVocab','live','follow','want','ghtoken','notes']) { const el = $(k); if (el) el.value = cfg[k] || ''; } NF.course = notesKey(cfg.course); NF.by = {}; NF.dirty = false; fillCoursePick(); syncCoursePick(); updateNotesInfo(); }
+function formToCfg(){ for (const k of ['course','gkey','akey','asrModel','okey','llm','silence','answerWeak','qShow','rawMic','audioIn','quiet','rec','asrVocab','live','follow','want','ghtoken','notes']) { const el = $(k); if (el) cfg[k] = (el.value || '').trim(); } for (const k in NF.by) { if (k !== notesKey(cfg.course)) notesPut(k, (NF.by[k].text || '').trim(), NF.by[k].name); } notesPut(cfg.course, cfg.notes, cfg.notesName); }
 function updateNotesInfo(){ const n = ($('notes').value || '').length; $('notesInfo').textContent = n ? ('レジュメ ' + n.toLocaleString() + ' 文字' + (cfg.notesName ? '（' + cfg.notesName + '）' : '')) : 'レジュメなし'; }
 
 /* ---------------- 用語バイアス ---------------- */
@@ -794,7 +808,7 @@ function handleSegment(tx, lat, proc, sec){
     if (lv === 2) { document.body.classList.remove('flash'); void document.body.offsetWidth; document.body.classList.add('flash'); }
     if (qid) { const a = document.createElement('div'); a.className = 'ans'; a.id = 'ans' + qid; a.dataset.text = tx; a.dataset.ts = ts; a.innerHTML = '<p class="q"></p><p class="thinking">考え中…</p>'; a.querySelector('.q').textContent = 'Q: ' + tx; $('alog').appendChild(a); alogAdded(a, false); }
   }
-  A.lastSeg = tx; A.lastSegAt = Date.now();
+  A.lastSeg = tx; A.lastSegAt = Date.now(); try { wantMaybeRun(); } catch (e) {}
   setStatus('遅れ ' + lat.toFixed(1) + '秒（処理 ' + proc.toFixed(1) + '秒／音声 ' + sec.toFixed(1) + '秒）  待ち ' + A.chunkQ.length);
 }
 
@@ -849,17 +863,17 @@ const NL = String.fromCharCode(10);
 /* 右側の「検知した質問」「AIに送る文」は見出しタップで畳める。畳むと回答候補が広がる。状態はこの端末に残す。
    長押しで文を足した時は「AIに送る文」を自動で開き、送る・消すで畳んでいた状態に戻す。 */
 const FOLD_KEY = 'lq_fold_v1';
-const F = { qPane: false, cPane: false, cAuto: false };
-function foldLoad(){ try { const j = JSON.parse(localStorage.getItem(FOLD_KEY) || 'null'); if (j) { F.qPane = !!j.qPane; F.cPane = !!j.cPane; } } catch (e) {} }
-function foldSave(){ try { localStorage.setItem(FOLD_KEY, JSON.stringify({ qPane: F.qPane, cPane: F.cPane })); } catch (e) {} }
+const F = { qPane: false, cPane: false, cAuto: false, wPane: true };
+function foldLoad(){ try { const j = JSON.parse(localStorage.getItem(FOLD_KEY) || 'null'); if (j) { F.qPane = !!j.qPane; F.cPane = !!j.cPane; if ('wPane' in j) F.wPane = !!j.wPane; } } catch (e) {} }
+function foldSave(){ try { localStorage.setItem(FOLD_KEY, JSON.stringify({ qPane: F.qPane, cPane: F.cPane, wPane: F.wPane })); } catch (e) {} }
 function foldApply(id){ const pane = $(id); if (!pane) return; const on = !!F[id]; pane.classList.toggle('fold', on); const h = pane.querySelector('h2'); if (h) h.setAttribute('aria-expanded', on ? 'false' : 'true');
-  if (!on) { const sc = pane.querySelector('.scroll'); if (sc) sc.scrollTop = sc.scrollHeight; } }
+  if (!on) { const sc = pane.querySelector('.scroll'); if (sc) sc.scrollTop = id === 'wPane' ? 0 : sc.scrollHeight; } }
 function foldSet(id, on, save){ F[id] = !!on; foldApply(id); if (save !== false) foldSave(); }
-for (const id of ['qPane', 'cPane']) { const h = $(id).querySelector('h2'); const tog = () => { F.cAuto = false; foldSet(id, !F[id]); };
+for (const id of ['qPane', 'cPane', 'wPane']) { const h = $(id).querySelector('h2'); const tog = () => { F.cAuto = false; foldSet(id, !F[id]); };
   h.addEventListener('click', tog); h.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tog(); } }); }
 function composeShow(){ if (F.cPane) { F.cAuto = true; foldSet('cPane', false, false); } }    // 畳んであれば一時的に開く（保存はしない）
 function composeDone(){ if (F.cAuto) { F.cAuto = false; foldSet('cPane', true, false); } }    // 自動で開いた分だけ畳み直す
-foldLoad(); foldApply('qPane'); foldApply('cPane');
+foldLoad(); foldApply('qPane'); foldApply('cPane'); foldApply('wPane');
 function composeAdd(tx){ const ta = $('compose'); if (!ta) return; const v = ta.value || ''; ta.value = v + (v && !v.endsWith(NL) ? NL : '') + tx + NL; composeShow(); ta.scrollTop = ta.scrollHeight; }
 $('transcript').addEventListener('pointerdown', (e) => {
   const p = e.target.closest('.line'); if (!p || !p.dataset.text) return;
@@ -1069,7 +1083,7 @@ async function askAnswer(qid, q, ctx, force, alt){
   const user = head + (force && kd ? FORCE_KONDAN(q) : force
     ? '【学生がタップして指名した発言（必ず答える）】\n' + q + '\n\n学生がこの発言を自分で選んで回答を求めている。質問かどうかの判定はしない。1行目は必ず「判定: 質問（指名）」と書き、2行目から答え・補足・根拠を必ず書く。指名された文は、ほとんどの場合、先生が学生に投げた問い（例:「どうしたらいいですか？」「なに？」）。答えるのは「学生が今何をすべきか」や授業の進め方ではなく、その問いの中身、つまり先生が学生に言わせたい答え。直前の文字起こしと検知した質問の流れから、先生が示した状況・制約・ダメ出し（例: ○○は通らない）を前提に、問いを1文で具体化してから答える。問いの推定は補足の冒頭に「問いの推定: …」と1行で示す。誤変換が多くても、文脈から最も筋の通る解釈を1つ選んで答え、「分からない」「資料を参照」では終わらない。'
     : '【検知した発言（これについて判定と回答案）】\n' + q)
-    + (alt ? (kd ? '\n\n【前回の答えの案（学生は別の言い方か別の中身を求めている）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。資料の範囲で、別の言い方か別の候補を「答え」に書く。' : '\n\n【前回の答え（先生の求める答えではなかった）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。それ以外の候補を「答え」と「別解」に1つずつ書く。') : '');
+    + (alt ? (kd ? '\n\n【前回の答えの案（学生は別の言い方か別の中身を求めている）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。資料の範囲で、別の言い方か別の候補を「答え」に書く。' : '\n\n【前回の答え（先生の求める答えではなかった）】\n' + alt + '\n前回と同じ趣旨の答えは出さない。それ以外の候補を「答え」と「別解」に1つずつ書く。') : '') + (kd ? wantAskList() : '');
   const t0 = Date.now(); let text = '', err = '';
   try {
     if (cfg.llm === 'gemini') {
@@ -1174,12 +1188,150 @@ function followAsk(f){
   forceAsk(f.dataset.text, hhmmss(new Date()), undefined, '↪ ', true, extra);
 }
 
+/* ---------------- 聞きたい事と、裏で作る深掘りの問い（懇談の時だけ） ----------------
+   資料の「聞きたい事」の章（「- 」で始まる行）を一覧にして、右の列の畳める枠に出す。済の問いは薄い字になる（タップで未と済を入れ替える）。
+   裏の呼び出し（答えとは別。前回から30秒以上あいていて、相手の方の新しい文が10文たまった時だけ）が、
+   ①一覧のうち、相手の方がもう話した問いに済の印を付け、②相手の方の新しい話を掘り下げる問いを作って、ためていく（12個まで）。
+   一度作った問いは覚えておき、同じ話題の問いを作り直させない。回答候補の「聞き返し」には、まだ済んでいない問いだけを候補として渡す。
+   印とためた問いは、ログと同じ寿命（クリアで消える）。聞き取りと質問の判定には触らない。授業の時は何もしない。 */
+const WANT_KEY = 'lq_want_v1';
+const WN = { items: [], deep: [], asked: [], made: [], sig: null, course: null, saved: null, lastRun: 0, lastN: 0, runs: 0, fails: 0, busy: false, err: '', loaded: false };
+/* WANT-PURE-BEGIN */
+function wantParse(notes){    // 資料から「聞きたい事」の章を読む。[{ g: 見出し, t: 問い }]。「もう聞いた事」の見出しの下は読まない
+  const res = []; const lines = String(notes || '').replace(/\r/g, '').split('\n'); let on = false, skip = false, g = '';
+  for (const raw of lines) {
+    const l = raw.trim();
+    if (/^【[^】]*聞きたい事[^】]*】/.test(l)) { if (on) break; on = true; skip = false; g = ''; continue; }
+    if (!on) continue;
+    if (/^【/.test(l)) break;
+    if (/^◆/.test(l)) { g = l.replace(/^◆\s*/, ''); skip = /^もう聞いた/.test(g); continue; }
+    if (skip) continue;
+    const m = l.match(/^[-・]\s*(.+)$/); if (m && m[1].length <= 120 && res.length < 60) res.push({ g: g, t: m[1].trim() });
+  }
+  return res;
+}
+function wantNorm(s){ return String(s || '').replace(/[\s\u3000]+/g, ''); }
+function wantParseOut(out, nOpen, nPool, txNorm){    // 裏の呼び出しの答えを読む。根拠の文が文字起こしにそのまま無い「済」と、問いの形をしていない「深掘り」は捨てる
+  const res = { done: [], drop: [], deep: [] };
+  for (const raw of String(out || '').split('\n')) {
+    const l = raw.trim(); let m;
+    if ((m = l.match(/^済\s*[:：]\s*(\d+)\s*[｜|]\s*\[(\d\d:\d\d)[^\]]*\]\s*(.+)$/))) {
+      const n = Number(m[1]); const ev = wantNorm(m[3]);
+      if (n >= 1 && n <= nOpen && ev.length >= 6 && txNorm.indexOf(ev) >= 0 && !res.done.some(d => d.n === n)) res.done.push({ n: n, ts: m[2] });
+    } else if ((m = l.match(/^消す\s*[:：]\s*([A-La-l])(?![A-Za-z])/))) {
+      const k = m[1].toUpperCase().charCodeAt(0) - 65; if (k < nPool && res.drop.indexOf(k) < 0) res.drop.push(k);
+    } else if ((m = l.match(/^深掘り\s*[:：]\s*(?:\[(\d\d:\d\d)[^\]]*\]\s*)?(.+)$/))) {
+      const t = m[2].trim().replace(/^[「『]/, '').replace(/[」』]$/, '');
+      if (t.length >= 12 && t.length <= 110 && !/^なし/.test(t) && /(か[。．.]?|[?？])$/.test(t) && res.deep.length < 2 && !res.deep.some(d => d.t === t)) res.deep.push({ t: t, ts: m[1] || '' });
+    }
+  }
+  return res;
+}
+function wantPool(pool, drop, add, cap){    // ためてある問いから、答えが出た物を落として、新しい物を前に足す（多すぎたら古い物から落とす）
+  const keep = pool.filter((p, i) => drop.indexOf(i) < 0);
+  const fresh = add.filter(a => !keep.some(p => p.t === a.t));
+  return fresh.concat(keep).slice(0, cap);
+}
+/* WANT-PURE-END */
+const ROLE_WANT = (course) => 'あなたは、就職活動中の学生（公認会計士試験の合格者）の補助者です。学生は今、監査法人の方とのオンラインの懇談「' + course + '」に出ています。相手の方の発言のリアルタイム文字起こし（誤変換あり）が渡されます。学生本人の声は入っていません。\n【本人の資料】に、学生の経歴、提出したES、用意してある答え、これまでに相手の法人から聞いた話、出さないと決めた話が入っています。\nこの呼び出しは、学生が相手の方に聞く問いを、裏で用意しておくための物です。少し時間をおいて何度も呼ばれます。文字起こしは【前回までの発言】と【新しい発言】に分けて渡されます。やる事は2つです。\n1つ目（済の印）: 【聞きたい事の一覧】のうち、相手の方の発言（前回までの分も、新しい分も）の中に、もう答えが出ている問いを選ぶ。答えが出ている、とは、その問いを今から聞くと、相手の方が同じ話をくり返す事になる、という意味。話題が近いだけの物、一部しか分からない物は選ばない。選んだ問いごとに、根拠になる相手の方の発言を、文字起こしから時刻つきでそのまま1文写す。そのまま写せない問いは選ばない。\n2つ目（深掘り）: 【新しい発言】に出てきた話を掘り下げる問いを、新しく0〜2個作る。次の順で考える。①【新しい発言】の中から、学生の関心（資料にある、学生が何に関心を持っているか）とつながる話題を選ぶ。無ければ作らない。②その話題について相手の方がもう話した事を、文字起こしの全部（前回までの分も）から拾って、「出た事:」の行に時刻つきで短く書く。③「出た事」のどれにも答えが入っていない、その一歩先を聞く問いを作る。一歩先とは、相手の方ご自身の経験や判断を引き出す問い（その仕事で難しかった所、迷った所、若手がどこまで任されるか、具体例のその後、大事にしている事、など。毎回同じ型にしない）。相手の方が話していない事を、起きた事として決めつけない（「〜はありましたか」の形で聞く）。④作った問いを「出た事」と見比べ、今聞くと相手の方が同じ話をくり返す事にならないかを確かめる。なりそうなら出さない。\n【もう作った問い・済ませた問い】にある問いと、同じ話題・同じ趣旨の問いは作らない（言い換えただけの物も作らない）。足す価値のある問いが無ければ、深掘りの行は書かない。【今たまっている深掘りの候補】のうち、【新しい発言】の中で答えが出た物は「消す」に挙げる。\n資料の「出さない話」に触れる問いは作らない。問いは学生の言葉（です・ます）で、「先ほどの〜のお話で」のように、相手の方の話のどこを受けているかが分かる形にする。1つ70字以内。\n出力の形（この形の行だけを書く。前置き・説明は書かない。当てはまる物が無い種類の行は書かない。書く行が1つも無ければ、何も書かずに「なし」の2文字だけを返す）:\n済: 番号｜[時刻] 根拠の文\n消す: 記号\n出た事: [時刻] …\n深掘り: [時刻] 問い';
+function wantOn(){ return isKondan() && cfg.want !== 'no'; }
+function wantSave(){ try { localStorage.setItem(WANT_KEY, JSON.stringify({ course: cfg.course || '', done: WN.items.filter(i => i.done).map(i => ({ t: i.t, ev: i.ev || '', by: i.by || '' })), deep: WN.deep, asked: WN.asked, made: WN.made, lastN: WN.lastN, runs: WN.runs })); } catch (e) {} }
+function wantSync(){    // 設定を読んだ時・保存した時に呼ぶ。科目や資料の「聞きたい事」が替わったら一覧を作り直す（済の印は、同じ文の問いに引き継ぐ）
+  if (!WN.loaded) {
+    WN.loaded = true; WN.course = cfg.course || '';
+    try { const j = JSON.parse(localStorage.getItem(WANT_KEY) || 'null'); if (j && j.course === (cfg.course || '')) { WN.saved = j.done || []; WN.deep = Array.isArray(j.deep) ? j.deep.slice(0, 12) : []; WN.asked = Array.isArray(j.asked) ? j.asked.slice(-20) : []; WN.made = Array.isArray(j.made) ? j.made.slice(-40) : []; WN.lastN = j.lastN || 0; WN.runs = j.runs || 0; } } catch (e) {}
+  }
+  if ((cfg.course || '') !== WN.course) { WN.course = cfg.course || ''; WN.deep = []; WN.asked = []; WN.made = []; WN.lastN = 0; WN.runs = 0; WN.fails = 0; WN.err = ''; }    // 別の科目・別の懇談に替えたら、ためた問いは持ち越さない
+  const list = wantOn() ? wantParse(cfg.notes) : [];
+  const sig = WN.course + '|' + list.map(i => i.g + '/' + i.t).join('\n');
+  if (sig !== WN.sig) {
+    WN.sig = sig; const old = {};
+    for (const i of WN.items) if (i.done) old[i.t] = i;
+    for (const d of (WN.saved || [])) if (!old[d.t]) old[d.t] = d;
+    WN.saved = null;
+    WN.items = list.map(i => { const o = old[i.t]; return o ? { g: i.g, t: i.t, done: 1, ev: o.ev || '', by: o.by || '' } : { g: i.g, t: i.t, done: 0, ev: '', by: '' }; });
+  }
+  wantRender();
+}
+function wantRender(){
+  const pane = document.getElementById('wPane'); if (!pane) return;
+  const on = wantOn() && (WN.items.length > 0 || WN.deep.length > 0);
+  pane.hidden = !on; if (!on) return;
+  const left = WN.items.filter(i => !i.done).length;
+  const fh = pane.querySelector('h2 .fh'); if (fh) fh.textContent = (WN.items.length ? '残り ' + left + '／' + WN.items.length + '・' : '') + (WN.deep.length ? '深掘り ' + WN.deep.length + '・' : '');
+  const el = $('wlog'); const top = el.scrollTop; el.textContent = '';
+  const head = (text) => { const p = document.createElement('p'); p.className = 'wg'; p.textContent = text; el.appendChild(p); };
+  const add = (cls, text, ev, idx, kind) => { const p = document.createElement('p'); p.className = cls; p.dataset.kind = kind; p.dataset.idx = String(idx); const s = document.createElement('span'); s.className = 't'; s.textContent = text; p.appendChild(s); if (ev) { const e = document.createElement('span'); e.className = 'ev'; e.textContent = ev; p.appendChild(e); } el.appendChild(p); };
+  if (WN.deep.length) { head('深掘り（相手の方の話から、裏で作った問い。新しい物が上。聞いたらタップで消す）'); WN.deep.forEach((d, i) => add('want deep', d.t, d.ts || '', i, 'deep')); }
+  let g = null;
+  WN.items.forEach((it, i) => { if (it.g !== g) { g = it.g; head(g || '聞きたい事'); } add('want' + (it.done ? ' done' : ''), it.t, it.done ? ('✓ ' + (it.ev || '')) : '', i, 'item'); });
+  if (WN.err) { const p = document.createElement('p'); p.className = 'wnote'; p.textContent = WN.err; el.appendChild(p); }
+  el.scrollTop = top;
+}
+$('wlog').addEventListener('click', (e) => {    // 一覧の問い: 未と済を入れ替える。深掘りの問い: 聞いた物として消す
+  const p = e.target.closest('.want'); if (!p) return; const i = Number(p.dataset.idx);
+  if (p.dataset.kind === 'deep') { const d = WN.deep[i]; if (!d) return; WN.asked.push(d.t); if (WN.asked.length > 20) WN.asked.shift(); WN.deep.splice(i, 1); }
+  else { const it = WN.items[i]; if (!it) return; if (it.done) { it.done = 0; it.ev = ''; it.by = ''; } else { it.done = 1; it.ev = hhmmss(new Date()).slice(0, 5); it.by = 'me'; } }
+  wantSave(); wantRender();
+});
+function wantReset(){ for (const it of WN.items) { it.done = 0; it.ev = ''; it.by = ''; } WN.deep = []; WN.asked = []; WN.made = []; WN.lastRun = 0; WN.lastN = 0; WN.runs = 0; WN.fails = 0; WN.err = ''; try { localStorage.removeItem(WANT_KEY); } catch (e) {} wantRender(); }
+function wantAskList(){    // 回答候補の「聞き返し」には、まだ済んでいない問いだけを候補として渡す（答えの呼び出しの user の後ろに足す。資料のキャッシュは変わらない）。済が1つも無い間は何も足さない
+  if (!wantOn() || !WN.items.some(i => i.done)) return '';
+  const open = WN.items.filter(i => !i.done).map(i => '- ' + i.t);
+  return '\n\n【資料の「聞きたい事」のうち、今日まだ済んでいない物】\n' + (open.length ? open.join('\n') : '（なし）') + '\n（「聞き返し」は、この中から、話の流れに合う物を1つ選んで、その文のまま書く。ここに無い問いは今日もう済んでいるので書かない。合う物が無ければ「聞き返し」の行は省く）';
+}
+function wantSegs(){    // この3時間の、相手の方の発言（確定の文だけ）
+  const since = Date.now() - 3 * 3600 * 1000;
+  return A.lines.filter(l => l.kind === 'seg' && l.t instanceof Date && l.t.getTime() >= since && l.text && !/^\[/.test(l.text));
+}
+function wantMaybeRun(){    // 確定の文が1つ出るたびに呼ばれる。条件がそろった時だけ裏の呼び出しを1本走らせる
+  if (!wantOn() || cfg.want === 'list' || !cfg.akey || WN.busy || WN.runs >= 80 || WN.fails >= 3) return;
+  if (Date.now() - WN.lastRun < 30000) return;
+  const segs = wantSegs(); if (WN.lastN > segs.length) WN.lastN = Math.max(0, segs.length - 10);
+  if (segs.length - WN.lastN < 10) return;
+  wantRun(segs);
+}
+async function wantRun(segs){
+  WN.busy = true; WN.lastRun = Date.now(); const n0 = segs.length; const cut = Math.min(WN.lastN, n0);
+  const open = WN.items.filter(it => !it.done); const pool = WN.deep.slice();
+  const fmt = (ls) => ls.map(l => '[' + hhmmss(l.t) + '] ' + l.text).join('\n');
+  const txOld = fmt(segs.slice(0, cut)), txNew = fmt(segs.slice(cut));
+  const known = WN.made.concat(WN.asked.filter(x => WN.made.indexOf(x) < 0)).concat(WN.items.filter(i => i.done).map(i => i.t));
+  const user = '【聞きたい事の一覧（まだ済んでいない物）】\n' + (open.length ? open.map((it, k) => (k + 1) + '. ' + it.t).join('\n') : '（なし）')
+    + '\n\n【今たまっている深掘りの候補】\n' + (pool.length ? pool.map((d, k) => String.fromCharCode(65 + k) + '. ' + d.t).join('\n') : '（なし）')
+    + '\n\n【もう作った問い・済ませた問い（同じ話題・同じ趣旨の問いは作らない）】\n' + (known.length ? known.map(x => '- ' + x).join('\n') : '（なし）')
+    + '\n\n【前回までの発言（相手の方・古い→新しい）】\n' + (txOld || '（なし）')
+    + '\n\n【新しい発言（前回の後・相手の方・古い→新しい）】\n' + txNew;
+  let out = '';
+  try {
+    const opus = cfg.want !== 'sonnet';
+    const system = [{ type:'text', text: ROLE_WANT(cfg.course) }]; if (cfg.notes) system.push({ type:'text', text:'【本人の資料】\n' + cfg.notes, cache_control:{ type:'ephemeral' } });
+    const body = { model: opus ? 'claude-opus-5-5' : 'claude-sonnet-5-5', max_tokens: opus ? 2500 : 1000, system, messages:[{ role:'user', content: user }] };
+    if (opus) { body.thinking = { type:'adaptive' }; body.output_config = { effort:'low' }; } else body.thinking = { type:'between_tools' };
+    let ok = false;
+    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+      const r = await fetch(ANTHROPIC_URL, { method:'POST', headers:{ 'content-type':'application/json', 'x-api-key': cfg.akey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' }, body: JSON.stringify(body) });
+      if (!r.ok) { if (r.status === 400 && body.thinking) { delete body.thinking; delete body.output_config; continue; } throw new Error('HTTP ' + r.status); }
+      const j = await r.json(); out = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('').trim(); ok = true;
+    }
+    if (!ok) throw new Error('HTTP 400');
+    WN.err = ''; WN.fails = 0;
+  } catch (e) { WN.fails++; WN.err = '裏の呼び出しに失敗した（' + e.message + '）。一覧はそのまま使える' + (WN.fails >= 3 ? '。3回続いたので、裏の呼び出しは止めた' : ''); WN.busy = false; wantRender(); return; }
+  const res = wantParseOut(out, open.length, pool.length, wantNorm(txOld + '\n' + txNew));
+  for (const d of res.done) { const it = open[d.n - 1]; if (it && !it.done) { it.done = 1; it.ev = d.ts; it.by = 'ai'; } }
+  const dropT = res.drop.map(k => pool[k] && pool[k].t).filter(Boolean);    // 走らせている間に本人が消した物があっても、文で照らして落とす
+  const fresh = res.deep.filter(d => WN.made.indexOf(d.t) < 0 && WN.asked.indexOf(d.t) < 0);
+  for (const d of fresh) { WN.made.push(d.t); if (WN.made.length > 40) WN.made.shift(); }
+  WN.deep = wantPool(WN.deep.filter(d => dropT.indexOf(d.t) < 0), [], fresh, 12);
+  WN.lastN = n0; WN.runs++; WN.busy = false; wantSave(); wantRender();
+}
+
 /* ---------------- ログ ---------------- */
 function hhmmss(d){ return d.toTimeString().slice(0, 8); }
 function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : l.kind === 'manual' ? ('    [手動で質問] ' + l.text) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
 $('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileStem(cfg.course, (A.lines.find(l => l.t instanceof Date) || {}).t || new Date()) + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
 $('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
-$('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; AV.unseen = 0; alogBadge(); A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
+$('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; AV.unseen = 0; alogBadge(); A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { wantReset(); } catch (e) {} try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
 
 /* ---------------- 別の端末から読めるようにする（秘密のgistへ送る） ----------------
    設定にGitHubトークン（gist権限のみ）を入れると、ログが変わるたび（10秒に1回まで）と停止時・画面が隠れた時に、
