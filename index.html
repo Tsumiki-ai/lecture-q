@@ -136,6 +136,10 @@ body.quiet .qitem.weak{color:var(--muted)}
 #wlog .want .ev{font-size:11px;color:var(--ans);white-space:nowrap;font-variant-numeric:tabular-nums}
 #wlog .want.deep{border-left:2px dashed var(--ans);padding-left:8px}
 #wlog .wnote{font-size:11px;color:var(--muted);margin:8px 0 0}
+/* 文字起こし: 上へ動かして読み返している間だけ、右下に「↓ 新しい文」を出す（その間は、新しい文が出ても動かさない） */
+#trNewBox{position:relative;flex:0 0 auto;height:0}
+#trNew{position:absolute;right:12px;bottom:10px;z-index:4;font-size:13px;padding:6px 10px;background:var(--accent);color:#00131c;border-color:transparent;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.4);white-space:nowrap}
+#trNew[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -152,6 +156,7 @@ body.quiet .qitem.weak{color:var(--muted)}
     <h2>文字起こし</h2>
     <div id="kbd" hidden aria-label="画面のキーボード"></div>
     <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば必ず質問として答える。出た答えが違うときは、その回答候補をタップすると「別の答え」を出す。文を長押しすると右下の「AIに送る文」に溜まり、直してから送れる（左の文は変わらない）。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。右の「検知した質問」「AIに送る文」は見出しをタップすると畳めて、回答候補が広がる。</p></div>
+    <div id="trNewBox"><button id="trNew" type="button" hidden>↓ 一番下へ</button></div>
     <div class="pane foldable fold" id="wPane" aria-label="聞きたい事" hidden>
       <h2 id="wHead" role="button" tabindex="0" aria-expanded="false" aria-controls="wlog">聞きたい事<span class="fh"></span></h2>
       <div id="wlog" class="scroll"></div>
@@ -680,7 +685,7 @@ function rtPartial(text){
   if (!text) { if (el) el.remove(); return; }
   if (!el) { el = document.createElement('p'); el.className = 'line partial'; el.innerHTML = '<span class="ts"></span><span class="tx"></span>'; tr.appendChild(el); }
   const ts = hhmmss(new Date()); el.dataset.text = text; el.dataset.ts = ts;    // 押すと、この時点の文を回答候補へ送れる（長押しで「AIに送る文」にも足せる）
-  el.querySelector('.ts').textContent = ts; el.querySelector('.tx').textContent = text; tr.scrollTop = tr.scrollHeight;
+  el.querySelector('.ts').textContent = ts; el.querySelector('.tx').textContent = text; trAdded(0);
 }
 function rtEvent(m){
   const t = m.type || '';
@@ -762,7 +767,7 @@ function liveShow(text){
 function liveDrop(){ LV.dropped = LV.seq; if (LV.shown === LV.seq) rtPartial(''); }    // 短すぎて捨てた音の分は、途中の文も出さない
 function liveDone(seq){    // 確定の文が出た。その分の途中の文は消す。次の発話の途中の文が出ている時は残して、いちばん下へ動かす
   if (seq == null) return; const tr = $('transcript'); const el = tr.querySelector('.line.partial'); if (!el) return;
-  if (LV.shown <= seq) el.remove(); else { tr.appendChild(el); tr.scrollTop = tr.scrollHeight; }
+  if (LV.shown <= seq) el.remove(); else { tr.appendChild(el); trAdded(0); }
 }
 
 // Gemini が文字起こしの代わりに作業メモ（「音声を聴く：」「**フォーマット確認**」等）を返した時に落とす
@@ -804,7 +809,7 @@ function handleSegment(tx, lat, proc, sec){
   p.innerHTML = '<span class="ts">' + ts + '</span><span class="tx"></span>' + (lv ? '<span class="why"></span>' : '');
   p.querySelector('.tx').textContent = (lv === 2 ? '❓ ' : lv === 1 ? '? ' : '') + tx;
   if (lv) p.querySelector('.why').textContent = '← ' + (lv === 2 ? '質問' : '質問？') + '（' + why + '）';
-  tr.appendChild(p); tr.scrollTop = tr.scrollHeight;
+  tr.appendChild(p); trAdded(1);
   if (lv) {
     A.nq++; $('count').textContent = '質問 ' + A.nq + ' 件';
     const q = document.createElement('p'); q.className = 'qitem' + (lv === 1 ? ' weak' : ''); q.dataset.text = tx; q.dataset.ts = ts; q.innerHTML = '<span class="ts">' + ts + '</span><span></span>'; q.querySelector('span:last-child').textContent = tx; $('qlog').appendChild(q); $('qlog').scrollTop = $('qlog').scrollHeight;
@@ -814,6 +819,46 @@ function handleSegment(tx, lat, proc, sec){
   A.lastSeg = tx; A.lastSegAt = Date.now(); try { wantMaybeRun(); } catch (e) {}
   setStatus('遅れ ' + lat.toFixed(1) + '秒（処理 ' + proc.toFixed(1) + '秒／音声 ' + sec.toFixed(1) + '秒）  待ち ' + A.chunkQ.length);
 }
+
+/* ---------------- 文字起こしの表示位置 ----------------
+   一番下を見ている間は、新しい文について行く。上へ動かして読み返している間は、新しい文や途中の文が出ても動かさない。
+   その間は右下に「↓ 新しい文」を出す。押すか、自分で一番下まで戻すと、また ついて行く（回答候補の枠と同じ考え方）。
+   ついて行くかどうかは、自分で動かした時にだけ切り替える。枠の高さが変わっただけ（「聞きたい事」を開いた時など）では、読み返しに切り替えない。 */
+const TV = { stick: true, top: 0, unseen: 0, upAt: 0, wAcc: 0, wAt: 0, ty: null, tl: 0 };
+function trBadge(){ const b = $('trNew'); if (!b) return; b.hidden = TV.stick; if (!TV.stick) b.textContent = TV.unseen ? '↓ 新しい文 ' + TV.unseen : '↓ 一番下へ'; }
+function trStick(on){ if (TV.stick === on) return; TV.stick = on; if (on) TV.unseen = 0; trBadge(); }
+function trGap(){ const tr = $('transcript'); return tr.scrollHeight - tr.scrollTop - tr.clientHeight; }    // 一番下までの残り
+function trBottom(){ const tr = $('transcript'); tr.scrollTop = tr.scrollHeight; TV.top = tr.scrollTop; }
+function trReset(){ TV.stick = true; TV.unseen = 0; TV.top = 0; trBadge(); }
+function trUp(){ TV.upAt = performance.now(); trStick(false); }    // 自分で上へ動かし始めた
+function trAdded(n){    // 文を足した後・途中の文を書き換えた後に呼ぶ（n は足した確定の文の数）
+  const tr = $('transcript');
+  if (!TV.stick && tr.scrollHeight - tr.clientHeight <= 2) trStick(true);    // 動かせるほど文が無い時は、読み返しの状態を残さない（最初の説明の文が消えた後など）
+  if (TV.stick) trBottom(); else if (n) { TV.unseen += n; trBadge(); }
+}
+$('transcript').addEventListener('scroll', () => {
+  const top = $('transcript').scrollTop, gap = trGap(); const up = top < TV.top - 0.5; TV.top = top;
+  if (up) {
+    if (gap > 12) trStick(false);    // 上へ動かした（ごく小さな揺れでは切り替えない）
+    else if (gap <= 2 && performance.now() - TV.upAt > 400) trStick(true);    // 文が減ったり枠が伸びたりして、一番下に詰まった
+  } else if (gap < 40) trStick(true);    // 下へ動かして、一番下の近くまで戻った
+}, { passive: true });
+/* 上へ動かし始めた事は、動く前に分かる合図（ホイール・指）でも拾う。途中の文は1秒に何度も書き換わるので、
+   ゆっくり動かした時に、12px 進む前に下へ引き戻されるのを防ぐ。 */
+$('transcript').addEventListener('wheel', (e) => {
+  const dy = e.deltaMode ? e.deltaY * 30 : e.deltaY; const now = performance.now();
+  if (e.ctrlKey || dy >= 0) { TV.wAcc = 0; return; }
+  TV.wAcc = (now - TV.wAt < 250 ? TV.wAcc : 0) - dy; TV.wAt = now;    // 続けて回した分を足す（タッチパッドは小さい量が続けて来る）
+  if (TV.wAcc >= 12 && $('transcript').scrollTop > 12) trUp();
+}, { passive: true });
+$('transcript').addEventListener('touchstart', (e) => { TV.ty = e.touches.length === 1 ? e.touches[0].clientY : null; TV.tl = TV.ty || 0; }, { passive: true });
+$('transcript').addEventListener('touchmove', (e) => {
+  if (TV.ty == null || e.touches.length !== 1) return; const y = e.touches[0].clientY;
+  if (y > TV.tl && y - TV.ty >= 12 && $('transcript').scrollTop > 12) trUp();    // 指を下へ 12px 動かした＝上を読もうとしている
+  if (y < TV.ty) TV.ty = y; TV.tl = y;
+}, { passive: true });
+$('trNew').addEventListener('click', () => { trStick(true); trBottom(); });
+if (window.ResizeObserver) new ResizeObserver(() => { if (TV.stick) trBottom(); else if (trGap() <= 2) trStick(true); }).observe($('transcript'));    // 枠の高さが変わった時: ついて行っている間は一番下を保つ。読み返している間に枠が伸びて一番下に着いたら、ついて行く方に戻す
 
 /* ---------------- 回答候補の表示位置 ----------------
    自動で出た回答候補は、読んでいる所を動かさない（下に足すだけ）。見えていない新しい回答がある時は「↓ 新しい回答」を出す。
@@ -1334,7 +1379,7 @@ function hhmmss(d){ return d.toTimeString().slice(0, 8); }
 function logText(){ return A.lines.map(l => l.kind === 'answer' ? ('    [回答候補 ' + l.sec + '秒]\n' + l.answer.split('\n').map(s => '    ' + s).join('\n')) : l.kind === 'manual' ? ('    [手動で質問] ' + l.text) : ('[' + hhmmss(l.t) + '] ' + ({2:'[質問] ',1:'[質問?] ',0:''})[l.level] + l.text)).join('\n'); }
 $('btnSave').addEventListener('click', () => { const blob = new Blob([logText()], { type:'text/plain' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileStem(cfg.course, (A.lines.find(l => l.t instanceof Date) || {}).t || new Date()) + '.txt'; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); });
 $('btnCopy').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logText()); setStatus('ログをコピーした'); } catch (e) { setStatus('コピーできなかった。ログ保存を使う'); } });
-$('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; AV.unseen = 0; alogBadge(); A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { wantReset(); } catch (e) {} try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
+$('btnClear').addEventListener('click', () => { if (!confirm('画面のログ、自動保存したログ、残している録音を全部消す？')) return; $('transcript').innerHTML = ''; $('qlog').innerHTML = ''; $('alog').innerHTML = ''; AV.unseen = 0; alogBadge(); trReset(); A.lines = []; A.recent = []; A.nq = 0; $('count').textContent = '質問 0 件'; try { wantReset(); } catch (e) {} try { localStorage.removeItem(LOG_KEY); } catch (e) {} recClear().then(() => { $('btnRec').hidden = true; }).catch(() => {}); });
 
 /* ---------------- 別の端末から読めるようにする（秘密のgistへ送る） ----------------
    設定にGitHubトークン（gist権限のみ）を入れると、ログが変わるたび（10秒に1回まで）と停止時・画面が隠れた時に、
@@ -1419,7 +1464,7 @@ async function linkedRead(h, ask){    // ask が真の時だけ、読む許可�
   return { ok:true, text, name: f.name };
 }
 function linkBtn(need){ const b = $('btnNotesReload'); if (b) b.hidden = !need; }    // 上の「📄 資料を読み直す」は、読む許可が要る時だけ出す
-function sysNote(text){ const tr = $('transcript'); if (!tr || !text) return; const p = document.createElement('p'); p.className = 'sysnote'; p.textContent = text; tr.appendChild(p); tr.scrollTop = tr.scrollHeight; }
+function sysNote(text){ const tr = $('transcript'); if (!tr || !text) return; const p = document.createElement('p'); p.className = 'sysnote'; p.textContent = text; tr.appendChild(p); trAdded(1); }
 async function linkedReload(ask){    // ページを開いた時・「開始」の時・設定を保存した時は ask なし（窓を出さない）。上のボタンを押した時だけ ask あり
   const k = notesKey(cfg.course); const h = await fhGet(k); if (!h) { linkBtn(false); return ''; }
   try {
