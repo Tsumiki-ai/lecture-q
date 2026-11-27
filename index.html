@@ -124,8 +124,11 @@ body.quiet .qitem.weak{color:var(--muted)}
 #qPane[hidden]{display:none}
 #quick button{font-size:13px;line-height:1.2;padding:6px 10px;border-radius:14px;background:transparent;color:var(--fg);border:1px solid var(--ans)}
 .ans.quick{border-left-color:var(--accent)}
-/* 聞きたい事（懇談の時だけ）: 資料の「聞きたい事」の一覧と、裏で作った深掘りの問い。済は薄い字に線。タップで未と済を入れ替える */
-#wPane{flex:1 1 0} #wPane[hidden]{display:none}
+/* 聞きたい事（懇談の時だけ）: 資料の「聞きたい事」の一覧と、裏で作った深掘りの問い。済は薄い字に線。タップで未と済を入れ替える。
+   置き場は文字起こしの枠の下の段（右の列の回答候補を狭くしないため）。畳むと見出しの1行だけになる */
+#wPane{flex:0 0 auto;border:none;border-top:1px solid var(--line);border-radius:0;background:transparent} #wPane[hidden]{display:none}
+#wPane:not(.fold){flex:0 1 42%;min-height:140px}
+#wPane.fold>:not(h2){display:none}
 #wlog .wg{font-size:11px;color:var(--muted);margin:12px 0 4px;letter-spacing:.04em} #wlog .wg:first-child{margin-top:0}
 #wlog .want{font-size:14.5px;margin:0;padding:6px 2px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:8px;align-items:baseline;-webkit-tap-highlight-color:transparent}
 #wlog .want .t{flex:1;min-width:0}
@@ -149,15 +152,15 @@ body.quiet .qitem.weak{color:var(--muted)}
     <h2>文字起こし</h2>
     <div id="kbd" hidden aria-label="画面のキーボード"></div>
     <div id="transcript" class="scroll"><p class="notice">開始を押すとマイクの許可を求める。先生の声が0.6秒以上途切れるごとに1文ずつ出る。質問と判定した文は黄色。判定されなかった文も、タップすれば必ず質問として答える。出た答えが違うときは、その回答候補をタップすると「別の答え」を出す。文を長押しすると右下の「AIに送る文」に溜まり、直してから送れる（左の文は変わらない）。ログは1文ごとにこの端末に自動保存され、ページが読み直されても戻る。右の「検知した質問」「AIに送る文」は見出しをタップすると畳めて、回答候補が広がる。</p></div>
+    <div class="pane foldable fold" id="wPane" aria-label="聞きたい事" hidden>
+      <h2 id="wHead" role="button" tabindex="0" aria-expanded="false" aria-controls="wlog">聞きたい事<span class="fh"></span></h2>
+      <div id="wlog" class="scroll"></div>
+    </div>
   </section>
   <section id="side">
     <div class="pane foldable" id="qPane" aria-label="検知した質問">
       <h2 id="qHead" role="button" tabindex="0" aria-expanded="true" aria-controls="qlog">検知した質問<span class="fh"></span></h2>
       <div id="qlog" class="scroll"></div>
-    </div>
-    <div class="pane foldable fold" id="wPane" aria-label="聞きたい事" hidden>
-      <h2 id="wHead" role="button" tabindex="0" aria-expanded="false" aria-controls="wlog">聞きたい事<span class="fh"></span></h2>
-      <div id="wlog" class="scroll"></div>
     </div>
     <div class="pane" id="aPane" aria-label="回答候補">
       <h2 id="ansHead">回答候補</h2>
